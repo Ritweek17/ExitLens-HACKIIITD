@@ -1,7 +1,6 @@
 # ExitLens backend
 
-FastAPI backend for ExitLens. The v1 endpoints currently return **mock data**; the TinyFish runner gets wired in next.
-API contract: [`../docs/api-contract.md`](../docs/api-contract.md). Interactive docs: http://localhost:8000/docs
+FastAPI backend for ExitLens. Implements the v1 Hackathon API contract ([`../docs/api-contract.md`](../docs/api-contract.md)), the TinyFish streaming orchestrator (`orchestrator.py`), the Box D deduplicated evidence-gated scoring engine (`scoring.py`), and the deterministic demo fallback (`mock_data.py`). Interactive docs: http://localhost:8000/docs
 
 Requires **Python 3.11+** (the `tinyfish` SDK needs it).
 
@@ -66,7 +65,8 @@ TinyFish runs in the cloud, so it cannot reach `localhost`. To audit the demo si
 |---|---|
 | `main.py` | FastAPI app, CORS, endpoints |
 | `models.py` | Pydantic models: the API contract in code |
-| `mock_data.py` | Canned steps and report used by the stubs |
-| `scoring.py` | Friction score formula |
+| `orchestrator.py` | TinyFish streaming adapter, barrier/CAPTCHA detector, evidence normaliser, and mock fallback |
+| `scoring.py` | Box D deduplicated indicator weights (`30/20/15/15/10/10`) and evidence-gating |
+| `mock_data.py` | Deterministic demo fallback steps and report |
 | `tinyfish_test.py` | Standalone TinyFish streaming test |
 | `demo_site/` | Mock dark-pattern subscription site |
