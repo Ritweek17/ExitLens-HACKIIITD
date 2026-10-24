@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from mock_data import PRESETS, mock_report, now
 from models import ErrorResponse, Report, RunCreate, RunCreated, RunEvent, ServicePreset
-from orchestrator import should_use_live_tinyfish, stream_audit_run
+from orchestrator import is_start_url_allowed, should_use_live_tinyfish, stream_audit_run
 
 load_dotenv()
 
@@ -134,6 +134,12 @@ def create_run(body: RunCreate) -> RunCreated:
         )
     if body.start_url is not None and body.start_url.scheme != "https":
         raise ApiError(422, "invalid_start_url", "start_url must use HTTPS.")
+    if not is_start_url_allowed(str(body.start_url) if body.start_url else None):
+        raise ApiError(
+            422,
+            "host_not_allowed",
+            "This server only audits allow-listed hosts (ALLOWED_AUDIT_HOSTS). Use a preset or ask the operator to allow this host.",
+        )
 
     prune_runs()
     run_id = f"run_{uuid.uuid4().hex[:8]}"

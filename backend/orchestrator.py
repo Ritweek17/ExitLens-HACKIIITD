@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
 from mock_data import (
+    PRESETS,
     mock_report,
     mock_step_event,
     mock_steps_for_run,
@@ -244,6 +245,39 @@ def get_run_time_limit_seconds() -> float:
     except ValueError:
         return DEFAULT_RUN_TIME_LIMIT_SECONDS
     return value if value > 0 else DEFAULT_RUN_TIME_LIMIT_SECONDS
+
+
+def get_allowed_audit_hosts() -> set[str]:
+    """Hosts from the optional `ALLOWED_AUDIT_HOSTS` env var (comma-separated). Empty = no restriction."""
+    raw = os.getenv("ALLOWED_AUDIT_HOSTS") or ""
+    return {h.strip().lower().lstrip("*.").lstrip(".") for h in raw.split(",") if h.strip()}
+
+
+def is_start_url_allowed(start_url: str | None) -> bool:
+    """Server-side guard for live audit targets.
+
+    With no allowlist configured every URL is allowed (the human approval flags still apply).
+    When `ALLOWED_AUDIT_HOSTS` is set, only these hosts (and their subdomains) may be audited:
+    the configured hosts, the curated preset hosts, local/demo fallback hosts, tunnel hosts and
+    the host of `PUBLIC_DEMO_BASE_URL`.
+    """
+    allowed = get_allowed_audit_hosts()
+    if not allowed or not start_url:
+        return True
+    host = (urlparse(start_url).hostname or "").lower()
+    if not host:
+        return False
+    allowed |= DEMO_FALLBACK_HOSTS
+    for preset in PRESETS:
+        if preset.default_start_url:
+            allowed.add((urlparse(str(preset.default_start_url)).hostname or "").lower())
+    public_host = (urlparse(os.getenv("PUBLIC_DEMO_BASE_URL") or "").hostname or "").lower()
+    if public_host:
+        allowed.add(public_host)
+    if is_tunnel_demo_url(start_url):
+        return True
+    allowed.discard("")
+    return any(host == a or host.endswith("." + a) for a in allowed)
 
 
 def should_use_live_tinyfish(start_url: str | None, service: str = "") -> bool:

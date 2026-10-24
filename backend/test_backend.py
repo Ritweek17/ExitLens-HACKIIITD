@@ -540,6 +540,55 @@ class ApiContractIntegrationTests(unittest.TestCase):
             res = self.client.get(p["demo_path"])
             self.assertEqual(res.status_code, 200)
 
+    def test_allowed_audit_hosts_guard(self) -> None:
+        import os
+        from unittest import mock
+
+        from orchestrator import is_start_url_allowed
+
+        # No allowlist configured: unrestricted (human approval flags still apply).
+        with mock.patch.dict(os.environ, {"ALLOWED_AUDIT_HOSTS": "", "PUBLIC_DEMO_BASE_URL": ""}):
+            self.assertTrue(is_start_url_allowed("https://anything.example.org/x"))
+
+        env = {"ALLOWED_AUDIT_HOSTS": " Hotstar.com, *.sonyliv.com ", "PUBLIC_DEMO_BASE_URL": ""}
+        with mock.patch.dict(os.environ, env):
+            self.assertTrue(is_start_url_allowed(None))
+            self.assertTrue(is_start_url_allowed("https://www.hotstar.com/in/account"))  # subdomain
+            self.assertTrue(is_start_url_allowed("https://sonyliv.com/subscription"))
+            self.assertTrue(is_start_url_allowed("https://help.netflix.com/en/node/407"))  # preset host
+            self.assertTrue(is_start_url_allowed("https://abc123.lhr.life/demo-site/"))  # tunnel
+            self.assertTrue(is_start_url_allowed("https://example.in/account"))  # demo fallback host
+            self.assertFalse(is_start_url_allowed("https://evil-hotstar.com/"))  # no suffix confusion
+            self.assertFalse(is_start_url_allowed("https://nothotstar.com/"))
+            self.assertFalse(is_start_url_allowed("https://random-site.org/cancel"))
+
+        with mock.patch.dict(
+            os.environ,
+            {"ALLOWED_AUDIT_HOSTS": "hotstar.com", "PUBLIC_DEMO_BASE_URL": "https://myhost.example.net"},
+        ):
+            self.assertTrue(is_start_url_allowed("https://myhost.example.net/demo-site/"))
+
+    def test_post_runs_rejects_disallowed_host_when_allowlist_set(self) -> None:
+        import os
+        from unittest import mock
+
+        client = TestClient(main.app)
+        body = {
+            "service": "Random",
+            "start_url": "https://random-site.org/cancel",
+            "human_approved": True,
+            "test_account_confirmed": True,
+        }
+        with mock.patch.dict(os.environ, {"ALLOWED_AUDIT_HOSTS": "hotstar.com"}):
+            res = client.post("/runs", json=body)
+            self.assertEqual(res.status_code, 422)
+            self.assertEqual(res.json()["error"]["code"], "host_not_allowed")
+            body["start_url"] = "https://www.hotstar.com/account"
+            self.assertEqual(client.post("/runs", json=body).status_code, 201)
+        with mock.patch.dict(os.environ, {"ALLOWED_AUDIT_HOSTS": ""}):
+            body["start_url"] = "https://random-site.org/cancel"
+            self.assertEqual(client.post("/runs", json=body).status_code, 201)
+
     def test_post_runs_approval_and_https_gates(self) -> None:
         r_unapproved = self.client.post(
             "/runs",
