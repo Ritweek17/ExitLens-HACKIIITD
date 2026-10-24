@@ -494,6 +494,33 @@ def normalise_and_build_report(
         )
 
     if error_message:
+        if steps:
+            partial_ev = [
+                Evidence(
+                    id=f"ev_{i}",
+                    step=step_idx,
+                    kind="text",
+                    timestamp=step_ts,
+                    content=f"Observed step {step_idx}: {step_label}",
+                )
+                for i, (step_idx, step_label, step_ts) in enumerate(steps, start=1)
+            ]
+            return Report(
+                run_id=run_id,
+                service=service,
+                outcome="partial_evidence",
+                friction_score=0,
+                safety_gate_stopped=False,
+                stop_reason="error",
+                streaming_url=streaming_url,
+                friction_signals=[],
+                evidence=partial_ev,
+                ccpa_alignment=[],
+                limitations=[
+                    f"Audit interrupted before completion: {error_message}",
+                    f"Partial evidence preserved from {len(steps)} observed step(s) prior to interruption; no verified friction score could be computed.",
+                ],
+            )
         return Report(
             run_id=run_id,
             service=service,

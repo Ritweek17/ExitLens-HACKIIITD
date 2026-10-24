@@ -140,7 +140,7 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertEqual(len(blocked_report.evidence), 1)
         self.assertEqual(blocked_report.evidence[0].id, "ev_block")
 
-        # Genuine API key / billing error -> outcome=failed, stop_reason=error
+        # Genuine API key / billing error with 0 steps -> outcome=failed, stop_reason=error
         failed_report = normalise_and_build_report(
             "run_err_infra",
             "Netflix India",
@@ -151,6 +151,23 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         )
         self.assertEqual(failed_report.outcome, "failed")
         self.assertEqual(failed_report.stop_reason, "error")
+        self.assertEqual(failed_report.evidence, [])
+
+        # Timeout or error after steps were observed -> outcome=partial_evidence, steps preserved in evidence
+        ts = datetime.now(timezone.utc)
+        partial_report = normalise_and_build_report(
+            "run_err_partial",
+            "YouTube Premium",
+            [(1, "Opened YouTube help page", ts), (2, "Clicked paid memberships link", ts)],
+            None,
+            None,
+            error_message="Audit exceeded the 180s time limit and was stopped.",
+        )
+        self.assertEqual(partial_report.outcome, "partial_evidence")
+        self.assertEqual(partial_report.stop_reason, "error")
+        self.assertEqual(len(partial_report.evidence), 2)
+        self.assertIn("Opened YouTube help page", partial_report.evidence[0].content or "")
+        self.assertIn("Partial evidence preserved from 2 observed step(s)", partial_report.limitations[1])
 
     def test_generic_errors_are_failed_not_barriers_but_real_barriers_still_block(self) -> None:
         generic = [
@@ -427,9 +444,11 @@ class SharedRunStreamTests(unittest.TestCase):
         self.assertEqual([e.type for e in evs], ["step", "error"])
         self.assertIsNone(evs[-1].stop_reason)
         self.assertIn("time limit", evs[-1].label)
-        self.assertEqual(state["report"].outcome, "failed")
+        self.assertEqual(state["report"].outcome, "partial_evidence")
         self.assertEqual(state["report"].stop_reason, "error")
         self.assertFalse(state["report"].safety_gate_stopped)
+        self.assertEqual(len(state["report"].evidence), 1)
+        self.assertIn("Opened account page", state["report"].evidence[0].content or "")
         self.assertIn("time limit", state["report"].limitations[0])
 
     def test_run_time_limit_env_parsing(self) -> None:

@@ -93,7 +93,7 @@ Server-Sent Events stream (`text/event-stream`). Every message uses only `data:`
 | `streaming_url` | string \| null | TinyFish live browser view, when available. |
 | `stop_reason` | `"pre_cancellation_boundary"` \| `"blocked"` \| `"user_stopped"` \| `"error"` \| null | Set only on `stopped` events. |
 
-Event order: one or more `step` -> `stopped` -> `report_ready`. On failure a single terminal `error` event is sent instead of `stopped` + `report_ready` (its `label` explains the failure and `stop_reason` stays `null`); the `failed` report is still available from `GET /runs/{run_id}/report`. **After `report_ready` or `error`, the server closes the stream; the client should call `eventSource.close()`** (otherwise `EventSource` reconnects automatically).
+Event order: one or more `step` -> `stopped` -> `report_ready`. On failure a single terminal `error` event is sent instead of `stopped` + `report_ready` (its `label` explains the failure and `stop_reason` stays `null`); the report is still available from `GET /runs/{run_id}/report` (with `outcome: "partial_evidence"` and the observed steps preserved in `evidence` if steps were recorded before the timeout/error, or `outcome: "failed"` if no steps were recorded). **After `report_ready` or `error`, the server closes the stream; the client should call `eventSource.close()`** (otherwise `EventSource` reconnects automatically).
 
 `404 Not Found` (`run_not_found`) for an unknown `run_id`.
 
