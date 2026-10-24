@@ -73,31 +73,26 @@ BLOCK_KEYWORDS = (
     "sign in to continue",
 )
 
+# Phrases in TinyFish error text that indicate a genuine anti-bot / auth barrier. Deliberately
+# specific: generic words ("bot", "login", "timeout", bare status codes) also appear in ordinary
+# failures and must not turn a plain error into a `human_required` barrier report.
 ERROR_BARRIER_KEYWORDS = (
     "error 1200",
     "cloudflare",
     "captcha",
     "verify you are human",
     "access denied",
-    "bot",
+    "err_access_denied",
+    "err_http2_protocol_error",
     "attention required",
-    "login",
-    "sign in",
+    "bot detection",
+    "blocked by automated browser",
+    "login required",
+    "login-gated",
+    "sign in to continue",
     "authentication required",
     "unauthorized",
     "forbidden",
-    "403",
-    "401",
-    "blocked",
-    "security",
-    "challenge",
-    "agent_failure",
-    "err_http2_protocol_error",
-    "err_access_denied",
-    "navigation failed",
-    "timeout",
-    "can't be processed",
-    "cannot be processed",
 )
 
 INFRA_ERROR_KEYWORDS = (

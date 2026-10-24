@@ -151,6 +151,31 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertEqual(failed_report.outcome, "failed")
         self.assertEqual(failed_report.stop_reason, "error")
 
+    def test_generic_errors_are_failed_not_barriers_but_real_barriers_still_block(self) -> None:
+        generic = [
+            "[TIMEOUT] Request timeout after 60s",
+            "[AGENT_FAILURE] Navigation failed: net::ERR_CONNECTION_RESET",
+            "Unexpected error in robot controller (security module reloaded)",
+            "Upstream returned status 401 or 403 for internal endpoint",
+        ]
+        for msg in generic:
+            with self.subTest(msg=msg):
+                report = normalise_and_build_report("run_g", "Svc", [], None, None, error_message=msg)
+                self.assertEqual(report.outcome, "failed")
+                self.assertEqual(report.stop_reason, "error")
+
+        barriers = [
+            "Target URL or login-gated page was blocked by automated browser policy.",
+            "net::ERR_HTTP2_PROTOCOL_ERROR while loading page",
+            "Cloudflare Error 1200: Verify you are human",
+            "Login required to view subscription",
+        ]
+        for msg in barriers:
+            with self.subTest(msg=msg):
+                report = normalise_and_build_report("run_b", "Svc", [], None, None, error_message=msg)
+                self.assertEqual(report.outcome, "human_required")
+                self.assertEqual(report.stop_reason, "blocked")
+
     def test_build_tinyfish_stream_kwargs_stealth_proxy_and_schema(self) -> None:
         import os
 
