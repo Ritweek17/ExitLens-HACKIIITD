@@ -94,7 +94,7 @@ def mock_report(run_id: str, service: str) -> Report:
             evidence_ids=["ev_4"],
         ),
     ]
-    total_score, scored_signals = score_signals(raw_signals, evidence)
+    total_score, scored_signals = score_signals(raw_signals, evidence, total_steps=len(MOCK_STEPS))
 
     ccpa = [
         CcpaAlignment(

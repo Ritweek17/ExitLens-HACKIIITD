@@ -169,7 +169,7 @@ Each friction signal belongs to one of 6 indicator categories (`backend/scoring.
 
 | Indicator | Weight | Meaning |
 |---|---|---|
-| `extra_steps` | `30` | Excessive clicks/navigation depth to reach cancellation |
+| `extra_steps` | `up to 30` | Graduated: `min(30, max(0, total_steps - 2) * 5)` (5 pts per step beyond 2-step baseline) |
 | `hidden_cancel` | `20` | Buried or visually de-emphasized cancel control |
 | `redirects` | `15` | Misdirection, circular loops, or dead-end pages |
 | `forced_reason` | `15` | Mandatory survey or reason selection before proceeding |

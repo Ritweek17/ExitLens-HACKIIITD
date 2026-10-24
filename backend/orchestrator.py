@@ -234,8 +234,8 @@ def normalise_and_build_report(
         )
         ccpa_map.setdefault(pattern, []).append(sig_id)
 
-    # Auto-detect extra_steps if >3 steps were observed and extra_steps was not reported
-    if len(steps) > 3 and not any(s.indicator == "extra_steps" for s in raw_signals):
+    # Auto-detect extra_steps if >2 steps were observed and extra_steps was not reported
+    if len(steps) > 2 and not any(s.indicator == "extra_steps" for s in raw_signals):
         ev_id = f"ev_{len(evidence) + 1}"
         evidence.append(
             Evidence(
@@ -262,7 +262,9 @@ def normalise_and_build_report(
         )
         ccpa_map.setdefault("subscription_trap", []).append(sig_id)
 
-    total_score, scored_signals = score_signals(raw_signals, evidence)
+    total_score, scored_signals = score_signals(
+        raw_signals, evidence, total_steps=len(steps) if steps else None
+    )
 
     # Safety gate evaluation
     cancellation_completed = bool(
