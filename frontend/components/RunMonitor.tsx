@@ -19,6 +19,7 @@ import {
   StopReason,
   getRunEventsUrl,
   getApiBaseUrl,
+  stopRun,
 } from "@/lib/api";
 
 interface RunMonitorProps {
@@ -33,6 +34,8 @@ export function RunMonitor({ runId }: RunMonitorProps) {
   const [stopReason, setStopReason] = useState<StopReason | null>(null);
   const [streamingUrl, setStreamingUrl] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const hasFinishedRef = useRef(false);
@@ -119,6 +122,20 @@ export function RunMonitor({ runId }: RunMonitorProps) {
     window.location.reload();
   }
 
+  async function handleStopAudit() {
+    setIsStopping(true);
+    setStopError(null);
+    try {
+      const result = await stopRun(runId, "user_stopped");
+      setStopReason(result.stop_reason);
+      setStatus("stopped");
+    } catch (err: unknown) {
+      setStopError(err instanceof Error ? err.message : "Unable to stop this audit.");
+    } finally {
+      setIsStopping(false);
+    }
+  }
+
   const stepEvents = events.filter((e) => e.type === "step");
   const lastStep = stepEvents[stepEvents.length - 1];
 
@@ -142,7 +159,7 @@ export function RunMonitor({ runId }: RunMonitorProps) {
           </div>
 
           {/* Dynamic Status Badge */}
-          <div>
+          <div className="flex items-center gap-2">
             {status === "connecting" && (
               <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-[#F3F1EA] text-[#64615B]">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -158,7 +175,7 @@ export function RunMonitor({ runId }: RunMonitorProps) {
             {status === "stopped" && (
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-[#D1FAE5] text-[#065F46] border border-[#A7F3D0]">
                 <ShieldCheck className="w-4 h-4 text-[#047857]" />
-                Boundary Reached &amp; Stopped
+                {stopReason === "user_stopped" ? "Stopped by You" : stopReason === "account_verification_failed" ? "Account Verification Failed" : "Audit Stopped"}
               </span>
             )}
             {status === "report_ready" && (
@@ -173,8 +190,21 @@ export function RunMonitor({ runId }: RunMonitorProps) {
                 Audit Interrupted
               </span>
             )}
+            {(status === "connecting" || status === "step") && (
+              <button
+                type="button"
+                onClick={handleStopAudit}
+                disabled={isStopping}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA] hover:bg-[#FEE2E2] disabled:opacity-60"
+              >
+                {isStopping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                {isStopping ? "Stopping…" : "Stop Audit"}
+              </button>
+            )}
           </div>
         </div>
+
+        {stopError && <p role="alert" className="pt-3 text-xs text-[#991B1B]">{stopError}</p>}
 
         {/* Live Step Tracker Summary */}
         <div className="pt-4 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
@@ -284,10 +314,14 @@ export function RunMonitor({ runId }: RunMonitorProps) {
             <ShieldCheck className="w-5 h-5 text-[#047857] shrink-0 mt-0.5" />
             <div className="space-y-1 text-xs text-[#065F46]">
               <p className="font-semibold text-sm">
-                Safety Boundary Enforced: Audit Halted Cleanly
+                {stopReason === "user_stopped" ? "Audit stopped by supervising human" : stopReason === "account_verification_failed" ? "Dedicated account could not be verified" : "Safety boundary enforced: audit halted"}
               </p>
               <p>
-                The audit runner located the final cancellation control and verified its location. As required by policy, execution stopped before submitting cancellation ({stopReason || "pre_cancellation_boundary"}).
+                {stopReason === "user_stopped"
+                  ? "The supervising human requested an immediate stop. Cancellation was not submitted."
+                  : stopReason === "account_verification_failed"
+                    ? "The runner did not continue because the approved dedicated test account could not be verified."
+                    : `The runner stopped before submitting cancellation (${stopReason || "pre_cancellation_boundary"}).`}
               </p>
               <div className="pt-2">
                 <Link

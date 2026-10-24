@@ -182,6 +182,17 @@ export function ReportView({ runId }: ReportViewProps) {
     score >= 60 ? "High Friction" : score >= 30 ? "Moderate Friction" : "Low Friction";
   const scoreColor =
     score >= 60 ? "text-[#BE123C]" : score >= 30 ? "text-[#D97706]" : "text-[#047857]";
+  const stopReasonMessage = report.stop_reason === "account_verification_failed"
+    ? "The runner could not verify the approved dedicated test account. The audit stopped without continuing."
+    : report.stop_reason === "user_stopped"
+      ? "A supervising human stopped the audit. Cancellation was not submitted."
+      : report.stop_reason === "pre_cancellation_boundary"
+        ? "The runner stopped before the final cancellation action."
+        : report.stop_reason === "blocked"
+          ? "The runner encountered a barrier and stopped without bypassing it."
+          : report.stop_reason === "error"
+            ? "The audit ended after an error. Review any captured evidence and limitations below."
+            : "The audit ended; review the recorded stop reason and limitations below.";
 
   // Collect step list from evidence and friction signals
   const allSteps = report.evidence.map((ev) => ({
@@ -295,16 +306,30 @@ export function ReportView({ runId }: ReportViewProps) {
             <span className="text-[11px] font-medium uppercase tracking-wider text-[#8C8780]">
               Safety Boundary
             </span>
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-[#047857] pt-1">
-              <ShieldCheck className="w-4 h-4 shrink-0" />
-              <span>Stopped Before Final Cancel</span>
+            <div className={`flex items-center gap-1.5 text-xs font-semibold pt-1 ${report.stop_reason === "account_verification_failed" || report.stop_reason === "error" ? "text-[#991B1B]" : "text-[#047857]"}`}>
+              {report.stop_reason === "account_verification_failed" || report.stop_reason === "error" ? <AlertTriangle className="w-4 h-4 shrink-0" /> : <ShieldCheck className="w-4 h-4 shrink-0" />}
+              <span>{report.stop_reason === "account_verification_failed" ? "Account verification failed; runner stopped" : report.stop_reason === "user_stopped" ? "Stopped by supervising human" : report.stop_reason === "error" ? "Audit interrupted" : "Stopped Before Final Cancel"}</span>
             </div>
             <p className="text-xs text-[#64615B]">
-              Reason: <code className="text-[#191817]">{report.stop_reason}</code>
+              {stopReasonMessage}
             </p>
+            <div className="pt-2 text-xs">
+              <span className="text-[#8C8780]">Dedicated test account: </span>
+              <span className="font-mono text-[#191817]">{report.test_account_ref || "Not recorded"}</span>
+              <span className={`ml-2 font-semibold ${report.account_verified === true ? "text-[#047857]" : report.account_verified === false ? "text-[#991B1B]" : "text-[#8C8780]"}`}>
+                {report.account_verified === true ? "Verified" : report.account_verified === false ? "Not verified" : "Verification unavailable"}
+              </span>
+            </div>
           </div>
         </div>
       </div>
+
+      {report.outcome === "partial_evidence" && (
+        <div role="status" className="p-4 rounded-xl bg-[#FEF3C7] border border-[#FDE68A] text-xs text-[#78350F]">
+          <p className="font-semibold">Partial evidence captured</p>
+          <p className="mt-1">The audit ended before its normal completion. Captured evidence is available in the step-by-step timeline, with known gaps listed under limitations.</p>
+        </div>
+      )}
 
       {/* 3. Report Navigation Tabs */}
       <div className="space-y-6">

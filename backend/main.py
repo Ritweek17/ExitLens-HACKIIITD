@@ -38,7 +38,15 @@ from v2_audits import build_v2_router
 
 load_dotenv()
 
-DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:3000"
+DEFAULT_ORIGINS = ",".join(
+    [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+    ]
+)
 ALLOWED_ORIGINS = [
     o.strip() for o in (os.getenv("ALLOWED_ORIGINS") or DEFAULT_ORIGINS).split(",") if o.strip()
 ]

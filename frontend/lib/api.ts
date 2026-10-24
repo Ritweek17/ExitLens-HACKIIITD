@@ -8,6 +8,7 @@ export type EventType = "step" | "stopped" | "report_ready" | "error";
 export type StopReason =
   | "pre_cancellation_boundary"
   | "blocked"
+  | "account_verification_failed"
   | "user_stopped"
   | "error";
 
@@ -50,6 +51,7 @@ export interface RunCreateRequest {
   start_url?: string;
   human_approved: boolean;
   test_account_confirmed: boolean;
+  test_account_ref?: string;
 }
 
 export interface RunCreatedResponse {
@@ -101,11 +103,32 @@ export interface Report {
   friction_score: number;
   safety_gate_stopped: boolean;
   stop_reason: StopReason;
+  test_account_ref?: string | null;
+  account_verified?: boolean;
   streaming_url?: string | null;
   friction_signals: FrictionSignal[];
   evidence: Evidence[];
   ccpa_alignment: CcpaAlignment[];
   limitations: string[];
+}
+
+export interface ServicePreset {
+  id: string;
+  service: string;
+  category: string;
+  demo_path: string;
+  default_start_url?: string | null;
+  default_test_account_ref?: string | null;
+  description: string;
+  expected_outcome: AuditOutcome;
+}
+
+export interface TestAccountPublic {
+  id: string;
+  service: string;
+  masked_identifier: string;
+  kind: "dedicated_test";
+  has_cloud_credentials: boolean;
 }
 
 export interface ApiErrorResponse {
@@ -151,6 +174,9 @@ export async function createRun(data: RunCreateRequest): Promise<RunCreatedRespo
   if (data.start_url && data.start_url.trim()) {
     payload.start_url = data.start_url.trim();
   }
+  if (data.test_account_ref?.trim()) {
+    payload.test_account_ref = data.test_account_ref.trim();
+  }
 
   let res: Response;
   try {
@@ -194,6 +220,62 @@ export async function createRun(data: RunCreateRequest): Promise<RunCreatedRespo
   }
 
   return (await res.json()) as RunCreatedResponse;
+}
+
+async function fetchCollection<T>(path: string): Promise<T[]> {
+  let res: Response;
+  try {
+    res = await fetch(`${getApiBaseUrl()}${path}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Network error";
+    throw new ApiClientError(`Unable to reach ExitLens backend at ${getApiBaseUrl()}. (${msg})`, "network_error", 0);
+  }
+  if (!res.ok) {
+    throw new ApiClientError(`Failed to load ${path.slice(1)} (HTTP ${res.status})`, "request_failed", res.status);
+  }
+  return (await res.json()) as T[];
+}
+
+export function fetchPresets(): Promise<ServicePreset[]> {
+  return fetchCollection<ServicePreset>("/presets");
+}
+
+export function fetchTestAccounts(): Promise<TestAccountPublic[]> {
+  return fetchCollection<TestAccountPublic>("/test-accounts");
+}
+
+export async function stopRun(
+  runId: string,
+  reason: StopReason = "user_stopped"
+): Promise<{ run_id: string; status: "stopped"; stop_reason: StopReason }> {
+  let res: Response;
+  try {
+    res = await fetch(`${getApiBaseUrl()}/runs/${encodeURIComponent(runId)}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Network error";
+    throw new ApiClientError(`Unable to reach ExitLens backend at ${getApiBaseUrl()}. (${msg})`, "network_error", 0);
+  }
+  if (!res.ok) {
+    let errorCode = "request_failed";
+    let errorMessage = `Failed to stop audit (HTTP ${res.status})`;
+    try {
+      const body = await res.json();
+      errorCode = body?.error?.code || errorCode;
+      errorMessage = body?.error?.message || errorMessage;
+    } catch {
+      // Keep the HTTP status message when the server has no JSON error body.
+    }
+    throw new ApiClientError(errorMessage, errorCode, res.status);
+  }
+  return (await res.json()) as { run_id: string; status: "stopped"; stop_reason: StopReason };
 }
 
 export async function getReport(runId: string): Promise<Report> {

@@ -11,7 +11,14 @@ import {
   Loader2,
   Lock,
 } from "lucide-react";
-import { createRun, ApiClientError } from "@/lib/api";
+import { createRun, ApiClientError, fetchPresets, fetchTestAccounts, ServicePreset, TestAccountPublic } from "@/lib/api";
+
+const LOCAL_PRESETS: ServicePreset[] = [
+  { id: "streamflix", service: "StreamFlix India", category: "Video OTT", demo_path: "/demo-site/", default_start_url: "https://help.netflix.com/en/node/407", default_test_account_ref: "tacct_streamflix_in", description: "StreamFlix India cancellation flow demo.", expected_outcome: "completed_with_evidence" },
+  { id: "ganaplus", service: "GanaPlus Music", category: "Audio Streaming", demo_path: "/demo-site/music.html", default_start_url: "https://support.spotify.com/in-en/article/cancel-premium/", default_test_account_ref: "tacct_ganaplus_in", description: "GanaPlus Music cancellation flow demo.", expected_outcome: "completed_with_evidence" },
+  { id: "quickcart", service: "QuickCart Pro", category: "Quick Commerce Membership", demo_path: "/demo-site/fair.html", default_start_url: "https://support.google.com/youtube/answer/6308278?hl=en-IN", default_test_account_ref: "tacct_quickcart_in", description: "QuickCart Pro cancellation benchmark demo.", expected_outcome: "completed_with_evidence" },
+  { id: "cineveil", service: "CineVeil VIP", category: "Video OTT (Barrier Gate)", demo_path: "/demo-site/blocked.html", default_start_url: "https://www.netflix.com/youraccount", default_test_account_ref: "tacct_cineveil_in", description: "CineVeil VIP barrier handling demo.", expected_outcome: "human_required" },
+];
 
 const COMMON_SERVICES = [
   "StreamFlix India (Demo Site)",
@@ -36,6 +43,12 @@ export function CheckFrictionForm() {
   // Form State
   const [service, setService] = useState("");
   const [startUrl, setStartUrl] = useState("");
+  const [presets, setPresets] = useState<ServicePreset[]>(LOCAL_PRESETS);
+  const [presetsUsingFallback, setPresetsUsingFallback] = useState(true);
+  const [testAccounts, setTestAccounts] = useState<TestAccountPublic[]>([]);
+  const [accountsLoadedFromServer, setAccountsLoadedFromServer] = useState(false);
+  const [testAccountRef, setTestAccountRef] = useState("");
+  const [useExternalUrl, setUseExternalUrl] = useState(false);
   const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const [accountConfirmed, setAccountConfirmed] = useState(false);
 
@@ -48,13 +61,41 @@ export function CheckFrictionForm() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
 
+  useEffect(() => {
+    let mounted = true;
+    fetchPresets().then((items) => {
+      if (mounted) {
+        setPresets(items);
+        setPresetsUsingFallback(false);
+      }
+    }).catch(() => {
+      if (mounted) {
+        setPresets(LOCAL_PRESETS);
+        setPresetsUsingFallback(true);
+      }
+    });
+    fetchTestAccounts().then((items) => {
+      if (mounted) {
+        setTestAccounts(items.filter((item) => item.kind === "dedicated_test"));
+        setAccountsLoadedFromServer(true);
+      }
+    }).catch(() => {
+      if (mounted) {
+        setTestAccounts([]);
+        setAccountsLoadedFromServer(false);
+      }
+    });
+    return () => { mounted = false; };
+  }, []);
+
   // Submission & Validation State
   const [urlError, setUrlError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Filtered services
-  const filteredServices = COMMON_SERVICES.filter((s) =>
+  const serviceOptions = Array.from(new Set([...presets.map((item) => item.service), ...COMMON_SERVICES]));
+  const filteredServices = serviceOptions.filter((s) =>
     s.toLowerCase().includes(searchTerm.toLowerCase().trim())
   );
 
@@ -123,8 +164,15 @@ export function CheckFrictionForm() {
   }
 
   function selectService(name: string) {
+    const preset = presets.find((item) => item.service === name);
     setService(name);
     setSearchTerm(name);
+    setTestAccountRef(preset?.default_test_account_ref || "");
+    setPermissionConfirmed(false);
+    setAccountConfirmed(false);
+    setUseExternalUrl(false);
+    setStartUrl("");
+    setUrlError(null);
     setIsOpen(false);
     setHighlightedIndex(-1);
   }
@@ -146,8 +194,24 @@ export function CheckFrictionForm() {
       return;
     }
 
+    if (!selectedPreset && !startUrl.trim()) {
+      setSubmitError("A custom service needs an HTTPS starting URL. Without one, the backend would return deterministic demo data instead of auditing the selected service.");
+      return;
+    }
+
     if (!permissionConfirmed || !accountConfirmed) {
       setSubmitError("Both safety & compliance confirmations are required to proceed.");
+      return;
+    }
+
+    const selectedAccount = testAccounts.find((account) => account.id === testAccountRef);
+    if (!accountsLoadedFromServer || !selectedAccount || selectedAccount.kind !== "dedicated_test" || (selectedPreset && (selectedAccount.service !== selectedPreset.service || selectedAccount.id !== selectedPreset.default_test_account_ref))) {
+      setSubmitError("A dedicated test account must be confirmed by the backend before an audit can start. Personal accounts are not allowed.");
+      return;
+    }
+
+    if (!selectedPreset && startUrl.trim() && !selectedAccount.has_cloud_credentials) {
+      setSubmitError("The backend has not confirmed a TinyFish profile or credential binding for this test account. Bind its dedicated test account in the backend before a live audit.");
       return;
     }
 
@@ -159,6 +223,7 @@ export function CheckFrictionForm() {
         start_url: startUrl.trim() || undefined,
         human_approved: true,
         test_account_confirmed: true,
+        test_account_ref: selectedAccount.id,
       });
 
       if (res && res.run_id) {
@@ -178,17 +243,35 @@ export function CheckFrictionForm() {
     }
   }
 
+  const selectedPreset = presets.find((item) => item.service === service);
+  const selectedAccount = testAccounts.find((account) => account.id === testAccountRef);
+  const customServiceNeedsUrl = Boolean(service.trim() && !selectedPreset && !startUrl.trim());
+  const customLiveAccountReady = Boolean(
+    selectedPreset || !startUrl.trim() || selectedAccount?.has_cloud_credentials
+  );
+
   const isFormValid =
     (service.trim() || searchTerm.trim()) &&
     !urlError &&
+    !customServiceNeedsUrl &&
     permissionConfirmed &&
-    accountConfirmed;
+    accountConfirmed &&
+    accountsLoadedFromServer &&
+    customLiveAccountReady &&
+    testAccounts.some((account) => account.id === testAccountRef && account.kind === "dedicated_test" && (!selectedPreset || (account.service === selectedPreset.service && account.id === selectedPreset.default_test_account_ref)));
 
   return (
     <form
       onSubmit={handleSubmit}
       className="exitlens-card p-6 sm:p-8 bg-white border border-[#E8E5DC] space-y-6"
     >
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+        <span className={`rounded-full px-2.5 py-1 font-medium ${presetsUsingFallback ? "bg-[#FEF3C7] text-[#92400E]" : "bg-[#D1FAE5] text-[#065F46]"}`}>
+          {presetsUsingFallback ? "Offline browsing · local preset fallback" : "Presets loaded from backend"}
+        </span>
+        <span className="text-[#8C8780]">{accountsLoadedFromServer ? "Test-account registry connected" : "Test-account registry unavailable"}</span>
+      </div>
+
       {/* Error Banner */}
       {submitError && (
         <div
@@ -232,6 +315,9 @@ export function CheckFrictionForm() {
               onChange={(e) => {
                 setSearchTerm(e.target.value);
                 setService("");
+                setTestAccountRef("");
+                setPermissionConfirmed(false);
+                setAccountConfirmed(false);
                 setIsOpen(true);
                 setHighlightedIndex(0);
               }}
@@ -305,19 +391,65 @@ export function CheckFrictionForm() {
         )}
       </div>
 
+      {/* Server-managed account gate */}
+      <div className="space-y-2">
+        <label htmlFor="test-account-select" className="block text-sm font-medium text-[#191817]">
+          Dedicated Test Account <span className="text-[#DC2626]">*</span>
+        </label>
+        <select
+          id="test-account-select"
+          value={testAccountRef}
+          onChange={(event) => { setTestAccountRef(event.target.value); setAccountConfirmed(false); }}
+          disabled={!accountsLoadedFromServer || testAccounts.length === 0}
+          className="w-full px-3.5 py-2.5 text-sm bg-white border border-[#E8E5DC] rounded-lg text-[#191817] disabled:bg-[#F3F1EA]"
+        >
+          <option value="">{accountsLoadedFromServer ? "Select a registered test account" : "Waiting for backend account verification"}</option>
+          {testAccounts.filter((account) => !selectedPreset || (account.id === selectedPreset.default_test_account_ref && account.service === selectedPreset.service)).map((account) => (
+            <option key={account.id} value={account.id}>
+              {account.service} · {account.masked_identifier} · {account.kind}
+            </option>
+          ))}
+        </select>
+        {testAccountRef && testAccounts.some((account) => account.id === testAccountRef) ? (
+          <p className="text-xs text-[#047857] flex items-center gap-1.5">
+            <Check className="w-3.5 h-3.5" /> Server-listed dedicated test account: <strong>{testAccounts.find((account) => account.id === testAccountRef)?.masked_identifier}</strong>
+          </p>
+        ) : (
+          <p className="text-xs text-[#92400E]">
+            {accountsLoadedFromServer ? "Choose an account from the server registry. A preset’s default reference is not verification." : "The backend must confirm a dedicated test account before this audit can start. No personal account may be used."}
+          </p>
+        )}
+        {selectedPreset && <p className="text-[11px] text-[#64615B]">Preset default account: {selectedPreset.default_test_account_ref || "none"}. Confirm the matching account above.</p>}
+      </div>
+
       {/* 2. Starting URL Field */}
       <div className="space-y-1.5">
         <label
           htmlFor="start-url-input"
           className="block text-sm font-medium text-[#191817]"
         >
-          Starting URL (optional)
+          Starting URL {selectedPreset ? "(optional for curated presets)" : service ? <span className="text-[#DC2626]">*</span> : "(required for custom services)"}
         </label>
+        {selectedPreset?.default_start_url && (
+          <label className="flex items-start gap-2 text-xs text-[#524F4B]">
+            <input
+              type="checkbox"
+              checked={useExternalUrl}
+              onChange={(event) => {
+                const checked = event.target.checked;
+                setUseExternalUrl(checked);
+                handleUrlChange(checked ? String(selectedPreset.default_start_url) : "");
+              }}
+              className="mt-0.5"
+            />
+            <span>Use preset external URL for a live external audit ({selectedPreset.default_start_url})</span>
+          </label>
+        )}
         <input
           id="start-url-input"
           type="url"
           value={startUrl}
-          onChange={(e) => handleUrlChange(e.target.value)}
+          onChange={(e) => { setUseExternalUrl(false); handleUrlChange(e.target.value); }}
           placeholder="https://service.com/account/subscription"
           className={`w-full px-3.5 py-2.5 text-sm bg-white border rounded-lg text-[#191817] placeholder-[#8C8780] focus:border-[#191817] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#191817] transition-colors duration-200 ${
             urlError ? "border-[#DC2626]" : "border-[#E8E5DC]"
@@ -329,8 +461,13 @@ export function CheckFrictionForm() {
           </p>
         ) : (
           <p className="text-xs text-[#8C8780] leading-relaxed">
-            Optional. Leave empty to audit the local dark-pattern demonstration OTT service.
+            {selectedPreset
+              ? "Leave empty to use the preset demo route. If the backend has no public tunnel configured, that route uses deterministic demo data. Add an HTTPS URL to request a live external browser run."
+              : "Enter the HTTPS page where the approved dedicated account can begin this service’s subscription journey. Leaving this blank would produce deterministic demo data, so custom-service audits require a URL."}
           </p>
+        )}
+        {!selectedPreset && startUrl.trim() && selectedAccount && !selectedAccount.has_cloud_credentials && (
+          <p className="text-xs text-[#B45309]">This account is server-listed, but no TinyFish cloud profile or credential binding is confirmed. A live account audit is disabled until it is bound.</p>
         )}
       </div>
 
@@ -361,7 +498,7 @@ export function CheckFrictionForm() {
               className="mt-0.5 w-4 h-4 rounded border-[#DCD8CB] text-[#191817] focus:ring-0 cursor-pointer"
             />
             <span className="group-hover:text-[#191817] transition-colors duration-200">
-              I confirm that any account used for testing is mine or that I am explicitly authorized to use it.
+              I approve this audit using only the selected registered dedicated test account. I will not use a personal account.
             </span>
           </label>
         </div>
@@ -400,6 +537,10 @@ export function CheckFrictionForm() {
           <p className="text-center text-[11px] text-[#8C8780] mt-2">
             {!service.trim() && !searchTerm.trim()
               ? "Specify a subscription service to proceed"
+              : customServiceNeedsUrl
+              ? "Enter an HTTPS starting URL for this custom service"
+              : !customLiveAccountReady
+              ? "Bind a TinyFish cloud profile or credentials to the test account"
               : !permissionConfirmed || !accountConfirmed
               ? "Check both safety confirmations to enable audit"
               : "Complete required fields"}
