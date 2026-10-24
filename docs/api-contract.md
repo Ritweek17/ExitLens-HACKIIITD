@@ -88,60 +88,104 @@ Event order: one or more `step` -> `stopped` -> `report_ready`. On failure an `e
 {
   "run_id": "run_ab12cd34",
   "service": "Example OTT",
-  "friction_score": 60,
+  "outcome": "completed_with_evidence",
+  "friction_score": 70,
   "safety_gate_stopped": true,
   "stop_reason": "pre_cancellation_boundary",
+  "streaming_url": null,
   "friction_signals": [
     {
       "id": "sig_1",
-      "title": "Cancel option buried 3 menus deep",
+      "indicator": "extra_steps",
+      "title": "7 steps required to reach the cancellation boundary",
       "severity": "high",
-      "description": "The cancel option is not on the account page; it takes three menu levels to reach it.",
-      "step_refs": [2, 3, 4],
+      "weight": 30,
+      "verified": true,
+      "description": "Reaching the final cancellation control takes 7 navigation steps instead of a direct 1-2 click exit.",
+      "step_refs": [1, 2, 3, 4, 5, 6, 7],
       "evidence_ids": ["ev_1"]
+    },
+    {
+      "id": "sig_2",
+      "indicator": "hidden_cancel",
+      "title": "Cancel option buried 3 menus deep with de-emphasized styling",
+      "severity": "high",
+      "weight": 20,
+      "verified": true,
+      "description": "The cancel link is hidden under Settings > Membership & billing > Manage plan and styled in low-contrast 11px text.",
+      "step_refs": [2, 3, 4],
+      "evidence_ids": ["ev_1", "ev_2"]
     }
   ],
   "evidence": [
-    { "id": "ev_1", "step": 4, "kind": "text", "content": "Settings > Membership & billing > Manage plan", "url": null }
+    {
+      "id": "ev_1",
+      "step": 4,
+      "kind": "text",
+      "timestamp": "2026-10-24T12:03:00Z",
+      "content": "Navigation path required 4 clicks across 3 nested menus: Account -> Settings -> Membership & billing -> Manage plan.",
+      "url": null
+    }
   ],
   "ccpa_alignment": [
-    { "pattern": "subscription_trap", "signal_ids": ["sig_1"], "status": "candidate", "rationale": "Cancellation is harder to find than sign-up." }
+    {
+      "pattern": "subscription_trap",
+      "signal_ids": ["sig_1", "sig_2"],
+      "status": "candidate",
+      "rationale": "Cancellation requires navigating a 7-step buried path and visually subordinated controls."
+    }
   ],
-  "limitations": ["Audit stopped before the final cancellation action."]
+  "limitations": [
+    "Safety gate enforced: stopped before clicking final 'Confirm cancellation' button."
+  ]
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `friction_score` | integer 0-100 | See formula below. |
-| `safety_gate_stopped` | boolean | `true` = the agent reported stopping before the final cancellation action. |
+| `outcome` | `"completed_with_evidence"` \| `"partial_evidence"` \| `"failed"` \| `"unverified"` \| `"human_required"` | Box E verification outcome. |
+| `friction_score` | integer 0-100 | Exact sum of `friction_signals[].weight` (see Box D formula below). |
+| `safety_gate_stopped` | boolean | `true` = the agent stopped before the final irreversible cancellation action. |
 | `stop_reason` | same enum as events | |
+| `streaming_url` | string \| null | TinyFish live browser view URL, when captured. |
+| `friction_signals[].indicator` | `"extra_steps"` \| `"hidden_cancel"` \| `"redirects"` \| `"forced_reason"` \| `"retention_offer"` \| `"unclear_copy"` | Box D indicator category. |
 | `friction_signals[].severity` | `"low"` \| `"medium"` \| `"high"` | |
+| `friction_signals[].weight` | integer 0-30 | Actual points contributed (`0` if unverified or duplicate category). |
+| `friction_signals[].verified` | boolean | `true` only when linked to non-empty captured evidence. |
 | `friction_signals[].step_refs` / `evidence_ids` | arrays | Links each finding back to steps and evidence. |
 | `evidence[].kind` | `"text"` \| `"screenshot"` \| `"url"` | |
+| `evidence[].timestamp` | string (ISO 8601) \| null | Timestamp when the evidence was captured. |
 | `ccpa_alignment[].pattern` | one of the 13 CCPA patterns below | |
 | `ccpa_alignment[].status` | always `"candidate"` | |
-| `limitations` | string[] | Where the audit stopped, what was not checked, etc. |
+| `limitations` | string[] | Where the audit stopped, unverified findings, or barriers encountered. |
 
 CCPA pattern values: `false_urgency`, `basket_sneaking`, `confirm_shaming`, `forced_action`, `subscription_trap`, `interface_interference`, `bait_and_switch`, `drip_pricing`, `disguised_advertisement`, `nagging`, `trick_question`, `saas_billing`, `rogue_malwares`.
 
-Errors: `404` (`run_not_found`). Once real runs are wired in, `409` (`report_not_ready`) is returned until the run has stopped - the frontend should handle it (e.g. wait for the `report_ready` event before fetching). The current stub returns the mock report immediately.
+Errors: `404` (`run_not_found`), `409` (`report_not_ready`) when a live TinyFish run has not finished streaming yet. Demo fallback runs (`start_url` omitted or pointing to a placeholder/local host) return the report immediately.
 
-### Friction score formula
+### Friction score formula (Box D - Evidence-gated & deduplicated)
 
-```
-score = min(100, extra_steps * 5 + sum(severity weights))
-extra_steps = steps to reach the final cancel button beyond a 2-step baseline
-severity weights: low = 5, medium = 10, high = 20
-```
+Each friction signal belongs to one of 6 indicator categories (`backend/scoring.py`):
 
-### Safety gate
+| Indicator | Weight | Meaning |
+|---|---|---|
+| `extra_steps` | `30` | Excessive clicks/navigation depth to reach cancellation |
+| `hidden_cancel` | `20` | Buried or visually de-emphasized cancel control |
+| `redirects` | `15` | Misdirection, circular loops, or dead-end pages |
+| `forced_reason` | `15` | Mandatory survey or reason selection before proceeding |
+| `retention_offer` | `10` | Discount or pause walls interrupting the exit flow |
+| `unclear_copy` | `10` | Confirm-shaming, guilt messaging, or confusing button labels |
 
-1. **Prompt:** the TinyFish goal tells the agent to stop at the final cancel/confirm button, name it, and not click it.
-2. **Structured output:** the agent must report the button it stopped at.
-3. **Backend check:** if the agent's result indicates a cancellation was completed or confirmed, the backend sets `safety_gate_stopped: false` and flags it in `limitations`.
+1. **Evidence gate:** A signal is marked `verified: true` **only** if its `evidence_ids` resolve to at least one `Evidence` item with non-empty `content` or `url`. Missing evidence sets `verified: false` and `weight: 0`.
+2. **Deduplication:** Each indicator category contributes its weight at most once per run (`30 + 20 + 15 + 15 + 10 + 10 = 100` max). Duplicate signals in the same category stay in `friction_signals` with `weight: 0`.
+3. **Exact sum:** `friction_score = sum(signal.weight for signal in friction_signals)`.
 
-This is a best-effort guarantee for an AI browser agent, and the report says so.
+### Safety gate & barrier handling (Box E)
+
+1. **Prompt:** the TinyFish goal tells the agent to stop at the final cancel/confirm button, name it, and never click it.
+2. **Structured output:** the agent must report `stopped_at_button` and `cancellation_completed: false`.
+3. **Barrier detection (`Agent complete != verified outcome`):** even if TinyFish completes, the backend inspects steps and output for Cloudflare (`Error 1200`), CAPTCHAs, or login walls. If detected, it sets `stop_reason: "blocked"`, `outcome: "human_required"`, and `safety_gate_stopped: false`.
+4. **Demo fallback:** if `start_url` is omitted or uses a placeholder domain (`example.in`, `example.com`, `localhost`), the backend runs the deterministic mock evidence path.
 
 ### Error shape
 

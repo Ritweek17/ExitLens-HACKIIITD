@@ -15,7 +15,26 @@ EventType = Literal["step", "stopped", "report_ready", "error"]
 
 StopReason = Literal["pre_cancellation_boundary", "blocked", "user_stopped", "error"]
 
+# Box E: Audit verification & completion outcomes
+AuditOutcome = Literal[
+    "completed_with_evidence",
+    "partial_evidence",
+    "failed",
+    "unverified",
+    "human_required",
+]
+
 Severity = Literal["low", "medium", "high"]
+
+# Box D: Deduped friction indicator categories (weights: 30/20/15/15/10/10 = 100 max)
+FrictionIndicator = Literal[
+    "extra_steps",      # Weight 30: Excessive navigation depth / clicks to reach cancel
+    "hidden_cancel",    # Weight 20: Cancel link buried or visually de-emphasized
+    "redirects",        # Weight 15: Misdirection, circular loops, or dead-end pages
+    "forced_reason",    # Weight 15: Mandatory cancellation survey or reason selection
+    "retention_offer",  # Weight 10: Discount/pause walls interrupting the exit flow
+    "unclear_copy",     # Weight 10: Confirm-shaming, guilt copy, or confusing button labels
+]
 
 EvidenceKind = Literal["text", "screenshot", "url"]
 
@@ -44,7 +63,7 @@ class RunCreate(BaseModel):
     service: str = Field(..., min_length=1, examples=["Example OTT"])
     start_url: HttpUrl | None = Field(
         None,
-        description="HTTPS page where the cancellation journey starts. Optional for mock runs.",
+        description="HTTPS page where the cancellation journey starts. Omit to run the deterministic demo fallback.",
         examples=["https://example.in/account/subscription"],
     )
     human_approved: bool = Field(
@@ -80,8 +99,22 @@ class RunEvent(BaseModel):
 
 class FrictionSignal(BaseModel):
     id: str = Field(..., examples=["sig_1"])
+    indicator: FrictionIndicator = Field(
+        "unclear_copy",
+        description="Box D indicator category used for deduplicated weighted scoring.",
+    )
     title: str
     severity: Severity
+    weight: int = Field(
+        0,
+        ge=0,
+        le=30,
+        description="Actual points contributed to friction_score (0 if unverified or duplicate indicator).",
+    )
+    verified: bool = Field(
+        True,
+        description="True only when backed by captured evidence; unverified signals contribute 0 points.",
+    )
     description: str
     step_refs: list[int] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
@@ -91,6 +124,9 @@ class Evidence(BaseModel):
     id: str = Field(..., examples=["ev_1"])
     step: int
     kind: EvidenceKind
+    timestamp: datetime | None = Field(
+        None, description="When this evidence was captured during the run."
+    )
     content: str | None = Field(None, description="Visible text or a description of the evidence.")
     url: str | None = Field(None, description="Screenshot or page URL, when applicable.")
 
@@ -107,11 +143,18 @@ class CcpaAlignment(BaseModel):
 class Report(BaseModel):
     run_id: str
     service: str
+    outcome: AuditOutcome = Field(
+        "completed_with_evidence",
+        description="Box E verification outcome of the audit session.",
+    )
     friction_score: int = Field(..., ge=0, le=100)
     safety_gate_stopped: bool = Field(
-        ..., description="True if the agent reported stopping before the final cancellation action."
+        ..., description="True if the agent stopped before the final irreversible cancellation action."
     )
     stop_reason: StopReason
+    streaming_url: str | None = Field(
+        None, description="TinyFish live browser stream URL if captured during the run."
+    )
     friction_signals: list[FrictionSignal]
     evidence: list[Evidence]
     ccpa_alignment: list[CcpaAlignment]

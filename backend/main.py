@@ -1,9 +1,9 @@
 """ExitLens backend - FastAPI app.
 
-v1 endpoints return MOCK data (see mock_data.py). Contract: docs/api-contract.md.
+Implements the v1 Hackathon Contract (docs/api-contract.md) and the
+Box B / D / E pipeline (orchestrator.py, scoring.py, mock_data.py).
 """
 
-import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -14,8 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from mock_data import MOCK_STEPS, mock_report, mock_step_event, now
+from mock_data import mock_report, now
 from models import ErrorResponse, Report, RunCreate, RunCreated, RunEvent
+from orchestrator import should_use_live_tinyfish, stream_audit_run
 
 load_dotenv()
 
@@ -23,7 +24,7 @@ DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:3000"
 ALLOWED_ORIGINS = [
     o.strip() for o in (os.getenv("ALLOWED_ORIGINS") or DEFAULT_ORIGINS).split(",") if o.strip()
 ]
-MOCK_STEP_DELAY_SECONDS = 1.0
+MOCK_STEP_DELAY_SECONDS = 0.6
 
 app = FastAPI(title="ExitLens API", version="0.1.0")
 
@@ -35,7 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory run store: run_id -> run metadata. Fine for a one-day build.
+# In-memory run store: run_id -> run metadata, events, and report.
 RUNS: dict[str, dict] = {}
 
 
@@ -99,6 +100,8 @@ def create_run(body: RunCreate) -> RunCreated:
         "service": body.service,
         "start_url": str(body.start_url) if body.start_url else None,
         "created_at": now(),
+        "events": None,
+        "report": None,
     }
     return RunCreated(run_id=run_id)
 
@@ -121,24 +124,11 @@ def sse(event: RunEvent) -> str:
     },
 )
 async def run_events(run_id: str) -> StreamingResponse:
-    get_run(run_id)
+    run = get_run(run_id)
 
     async def stream():
-        # MOCK: replay canned steps. Replace with the TinyFish runner later.
-        for i, label in enumerate(MOCK_STEPS, start=1):
-            yield sse(mock_step_event(i, label))
-            await asyncio.sleep(MOCK_STEP_DELAY_SECONDS)
-        last = len(MOCK_STEPS)
-        yield sse(
-            RunEvent(
-                type="stopped",
-                step=last,
-                label="Stopped before the final cancellation action",
-                timestamp=now(),
-                stop_reason="pre_cancellation_boundary",
-            )
-        )
-        yield sse(RunEvent(type="report_ready", step=last, label="Report ready", timestamp=now()))
+        async for ev in stream_audit_run(run_id, run, mock_delay_seconds=MOCK_STEP_DELAY_SECONDS):
+            yield sse(ev)
 
     return StreamingResponse(
         stream(),
@@ -154,4 +144,13 @@ async def run_events(run_id: str) -> StreamingResponse:
 )
 def run_report(run_id: str) -> Report:
     run = get_run(run_id)
-    return mock_report(run_id, run["service"])
+    if run.get("report") is not None:
+        return run["report"]
+    if not should_use_live_tinyfish(run.get("start_url")):
+        run["report"] = mock_report(run_id, run["service"])
+        return run["report"]
+    raise ApiError(
+        409,
+        "report_not_ready",
+        "Audit is still running or has not streamed events yet. Wait for the `report_ready` SSE event.",
+    )
