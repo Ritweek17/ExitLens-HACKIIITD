@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from mock_data import MOCK_STEPS, mock_report, mock_step_event, now
@@ -57,6 +57,11 @@ def get_run(run_id: str) -> dict:
     if run is None:
         raise ApiError(404, "run_not_found", f"No run with id '{run_id}'.")
     return run
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health")
