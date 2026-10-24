@@ -73,6 +73,113 @@ BLOCK_KEYWORDS = (
     "sign in to continue",
 )
 
+ERROR_BARRIER_KEYWORDS = (
+    "error 1200",
+    "cloudflare",
+    "captcha",
+    "verify you are human",
+    "access denied",
+    "bot",
+    "attention required",
+    "login",
+    "sign in",
+    "authentication required",
+    "unauthorized",
+    "forbidden",
+    "403",
+    "401",
+    "blocked",
+    "security",
+    "challenge",
+    "agent_failure",
+    "err_http2_protocol_error",
+    "err_access_denied",
+    "navigation failed",
+    "timeout",
+    "can't be processed",
+    "cannot be processed",
+)
+
+INFRA_ERROR_KEYWORDS = (
+    "invalid api key",
+    "authenticationerror",
+    "billing_failure",
+    "paymentrequired",
+    "ratelimit",
+    "quota",
+    "insufficient",
+)
+
+TUNNEL_HOST_SUFFIXES = (
+    ".lhr.life",
+    ".ngrok-free.app",
+    ".ngrok.io",
+    ".trycloudflare.com",
+    ".loca.lt",
+)
+
+AUDIT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "blocked": {"type": "boolean"},
+        "block_reason": {"type": "string", "nullable": True},
+        "stopped_at_button": {"type": "string", "nullable": True},
+        "cancellation_completed": {"type": "boolean"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "indicator": {
+                        "type": "string",
+                        "enum": [
+                            "extra_steps",
+                            "hidden_cancel",
+                            "redirects",
+                            "forced_reason",
+                            "retention_offer",
+                            "unclear_copy",
+                        ],
+                    },
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "step_number": {"type": "integer"},
+                    "step_refs": {"type": "array", "items": {"type": "integer"}},
+                    "evidence_quote": {"type": "string", "nullable": True},
+                    "ccpa_pattern": {
+                        "type": "string",
+                        "enum": [
+                            "subscription_trap",
+                            "interface_interference",
+                            "confirm_shaming",
+                            "nagging",
+                            "forced_action",
+                            "false_urgency",
+                            "trick_question",
+                        ],
+                    },
+                    "ccpa_rationale": {"type": "string", "nullable": True},
+                },
+                "required": [
+                    "indicator",
+                    "title",
+                    "description",
+                    "step_number",
+                    "evidence_quote",
+                    "ccpa_pattern",
+                ],
+            },
+        },
+    },
+    "required": [
+        "blocked",
+        "block_reason",
+        "stopped_at_button",
+        "cancellation_completed",
+        "findings",
+    ],
+}
+
 NEGATED_BARRIER_PHRASES = (
     "no captcha",
     "no cloudflare",
@@ -84,6 +191,8 @@ NEGATED_BARRIER_PHRASES = (
 
 META_STEP_PREFIXES = (
     "submit ",
+    "present ",
+    "extract ",
     "get full",
     "get detailed",
     "capture ",
@@ -175,6 +284,69 @@ def build_audit_goal(service: str) -> str:
     )
 
 
+def is_tunnel_demo_url(url: str | None) -> bool:
+    if not url:
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    return any(host.endswith(suffix) for suffix in TUNNEL_HOST_SUFFIXES)
+
+
+def build_tinyfish_stream_kwargs(start_url: str, goal: str) -> dict[str, Any]:
+    """Build TinyFish `agent.stream()` kwargs with stealth profile, optional India proxy, and JSON schema."""
+    from tinyfish import BrowserProfile, ProxyConfig
+
+    is_tunnel = is_tunnel_demo_url(start_url)
+    env_profile = (os.getenv("TINYFISH_BROWSER_PROFILE") or "").strip().lower()
+    if env_profile == "lite":
+        profile = BrowserProfile.LITE
+    elif env_profile == "stealth":
+        profile = BrowserProfile.STEALTH
+    else:
+        profile = BrowserProfile.LITE if is_tunnel else BrowserProfile.STEALTH
+
+    kwargs: dict[str, Any] = {
+        "url": start_url,
+        "goal": goal,
+        "browser_profile": profile,
+        "output_schema": AUDIT_OUTPUT_SCHEMA,
+    }
+
+    proxy_country = (os.getenv("TINYFISH_PROXY_COUNTRY") or "").strip().upper()
+    if proxy_country and not is_tunnel:
+        kwargs["proxy_config"] = ProxyConfig(enabled=True, country_code=proxy_country)
+
+    if not is_tunnel:
+        profile_id = (os.getenv("TINYFISH_PROFILE_ID") or "").strip()
+        if profile_id:
+            kwargs["use_profile"] = True
+            kwargs["profile_id"] = profile_id
+
+        use_vault_env = (os.getenv("TINYFISH_USE_VAULT") or "").strip().lower()
+        cred_ids_raw = (os.getenv("TINYFISH_CREDENTIAL_ITEM_IDS") or "").strip()
+        cred_ids = [c.strip() for c in cred_ids_raw.split(",") if c.strip()]
+        if use_vault_env in ("1", "true", "yes") or cred_ids:
+            kwargs["use_vault"] = True
+            if cred_ids:
+                kwargs["credential_item_ids"] = cred_ids
+
+    return kwargs
+
+
+def format_tinyfish_error(err: Any) -> str:
+    if err is None:
+        return ""
+    msg = getattr(err, "message", None)
+    cat = getattr(err, "category", None)
+    code = getattr(err, "code", None)
+    if msg:
+        prefix = str(code or cat or "ERROR")
+        return f"[{prefix}] {msg}"
+    text = str(err)
+    if "validation error for CompleteEvent" in text and "input_value=" in text:
+        return "Target URL or login-gated page was blocked by automated browser policy."
+    return text
+
+
 def _contains_unnegated_keyword(text: str) -> str | None:
     lowered = text.lower()
     for phrase in NEGATED_BARRIER_PHRASES:
@@ -185,7 +357,11 @@ def _contains_unnegated_keyword(text: str) -> str | None:
     return None
 
 
-def detect_barrier(steps: list[str], result_json: dict[str, Any] | None) -> str | None:
+def detect_barrier(
+    steps: list[str],
+    result_json: dict[str, Any] | None,
+    error_message: str | None = None,
+) -> str | None:
     """Box E: 'Agent complete != verified outcome' & 'CAPTCHA / auth barriers -> stop + report'."""
     if isinstance(result_json, dict):
         if result_json.get("blocked") is True:
@@ -201,6 +377,13 @@ def detect_barrier(steps: list[str], result_json: dict[str, Any] | None) -> str 
     kw = _contains_unnegated_keyword(" ".join(steps))
     if kw:
         return f"Observed step encountered barrier matching '{kw}'."
+
+    if error_message:
+        err_lower = error_message.lower()
+        if not any(infra in err_lower for infra in INFRA_ERROR_KEYWORDS):
+            for bkw in ERROR_BARRIER_KEYWORDS:
+                if bkw in err_lower:
+                    return f"Target site blocked automated browser or requires human authentication ({error_message})."
     return None
 
 
@@ -218,6 +401,41 @@ def normalise_and_build_report(
     error_message: str | None = None,
 ) -> Report:
     """Box B & D: Normalise raw observations into Evidence, classify indicators, and compute weighted score."""
+    step_labels = [label for _, label, _ in steps]
+    barrier = detect_barrier(step_labels, result_json, error_message)
+    if barrier:
+        if steps:
+            last_idx, last_label, last_ts = steps[-1]
+            ev_content = f"{barrier} (Last observed step: {last_label})"
+        else:
+            last_idx, last_ts = 0, now()
+            ev_content = barrier
+        ev_list = [
+            Evidence(
+                id="ev_block",
+                step=last_idx,
+                kind="text",
+                timestamp=last_ts,
+                content=ev_content,
+            )
+        ]
+        return Report(
+            run_id=run_id,
+            service=service,
+            outcome="human_required",
+            friction_score=0,
+            safety_gate_stopped=False,
+            stop_reason="blocked",
+            streaming_url=streaming_url,
+            friction_signals=[],
+            evidence=ev_list,
+            ccpa_alignment=[],
+            limitations=[
+                f"Barrier detected (Agent complete != verified outcome): {barrier}",
+                "Human intervention or an authenticated session is required to continue.",
+            ],
+        )
+
     if error_message:
         return Report(
             run_id=run_id,
@@ -233,38 +451,6 @@ def normalise_and_build_report(
             limitations=[
                 f"Audit failed before completion: {error_message}",
                 "No verified friction score could be computed.",
-            ],
-        )
-
-    step_labels = [label for _, label, _ in steps]
-    barrier = detect_barrier(step_labels, result_json)
-    if barrier:
-        ev_list: list[Evidence] = []
-        if steps:
-            last_idx, last_label, last_ts = steps[-1]
-            ev_list.append(
-                Evidence(
-                    id="ev_block",
-                    step=last_idx,
-                    kind="text",
-                    timestamp=last_ts,
-                    content=f"{barrier} (Last observed step: {last_label})",
-                )
-            )
-        return Report(
-            run_id=run_id,
-            service=service,
-            outcome="human_required",
-            friction_score=0,
-            safety_gate_stopped=False,
-            stop_reason="blocked",
-            streaming_url=streaming_url,
-            friction_signals=[],
-            evidence=ev_list,
-            ccpa_alignment=[],
-            limitations=[
-                f"Barrier detected (Agent complete != verified outcome): {barrier}",
-                "Human intervention or an authenticated session is required to continue.",
             ],
         )
 
@@ -530,7 +716,8 @@ async def stream_audit_run(
         try:
             client = TinyFish(api_key=api_key)
             goal = build_audit_goal(service)
-            with client.agent.stream(url=start_url, goal=goal) as stream:
+            stream_kwargs = build_tinyfish_stream_kwargs(start_url or "", goal)
+            with client.agent.stream(**stream_kwargs) as stream:
                 for event in stream:
                     ts = now()
                     if isinstance(event, StreamingUrlEvent):
@@ -548,11 +735,11 @@ async def stream_audit_run(
                         loop.call_soon_threadsafe(queue.put_nowait, run_ev)
                     elif isinstance(event, CompleteEvent):
                         if event.error:
-                            error_message = str(event.error)
+                            error_message = format_tinyfish_error(event.error)
                         if isinstance(event.result_json, dict):
                             result_json = event.result_json
         except Exception as exc:  # noqa: BLE001
-            error_message = str(exc)
+            error_message = format_tinyfish_error(exc)
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 

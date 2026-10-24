@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 import main
 from models import Evidence, FrictionSignal
 from orchestrator import (
+    AUDIT_OUTPUT_SCHEMA,
+    build_tinyfish_stream_kwargs,
     detect_barrier,
     normalise_and_build_report,
     resolve_effective_start_url,
@@ -120,6 +122,70 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertIsNotNone(
             detect_barrier([], {"blocked": True, "block_reason": "OTP required"})
         )
+
+    def test_error_message_barrier_vs_infra_failure(self) -> None:
+        # Anti-bot / login / navigation failure from CompleteEvent.error -> Box E blocked / human_required
+        blocked_report = normalise_and_build_report(
+            "run_err_block",
+            "Netflix India",
+            [],
+            None,
+            None,
+            error_message="[AGENT_FAILURE] Navigation failed: 403 Forbidden / login required",
+        )
+        self.assertEqual(blocked_report.outcome, "human_required")
+        self.assertEqual(blocked_report.stop_reason, "blocked")
+        self.assertFalse(blocked_report.safety_gate_stopped)
+        self.assertEqual(len(blocked_report.evidence), 1)
+        self.assertEqual(blocked_report.evidence[0].id, "ev_block")
+
+        # Genuine API key / billing error -> outcome=failed, stop_reason=error
+        failed_report = normalise_and_build_report(
+            "run_err_infra",
+            "Netflix India",
+            [],
+            None,
+            None,
+            error_message="[BILLING_FAILURE] Invalid API key or quota exceeded",
+        )
+        self.assertEqual(failed_report.outcome, "failed")
+        self.assertEqual(failed_report.stop_reason, "error")
+
+    def test_build_tinyfish_stream_kwargs_stealth_proxy_and_schema(self) -> None:
+        import os
+
+        old_prof = os.environ.pop("TINYFISH_BROWSER_PROFILE", None)
+        old_country = os.environ.pop("TINYFISH_PROXY_COUNTRY", None)
+        try:
+            ext_kwargs = build_tinyfish_stream_kwargs("https://www.netflix.com/YourAccount", "goal")
+            self.assertEqual(str(ext_kwargs["browser_profile"]), "stealth")
+            self.assertEqual(ext_kwargs["output_schema"], AUDIT_OUTPUT_SCHEMA)
+            self.assertNotIn("proxy_config", ext_kwargs)
+
+            tun_kwargs = build_tinyfish_stream_kwargs("https://abc123.lhr.life/demo-site/", "goal")
+            self.assertEqual(str(tun_kwargs["browser_profile"]), "lite")
+
+            os.environ["TINYFISH_PROXY_COUNTRY"] = "IN"
+            os.environ["TINYFISH_PROFILE_ID"] = "prof_test_india_1"
+            os.environ["TINYFISH_CREDENTIAL_ITEM_IDS"] = "cred_ott_1,cred_ott_2"
+            in_kwargs = build_tinyfish_stream_kwargs("https://www.sonyliv.com/subscription", "goal")
+            self.assertTrue(in_kwargs["proxy_config"].enabled)
+            self.assertEqual(str(in_kwargs["proxy_config"].country_code), "IN")
+            self.assertTrue(in_kwargs["use_profile"])
+            self.assertEqual(in_kwargs["profile_id"], "prof_test_india_1")
+            self.assertTrue(in_kwargs["use_vault"])
+            self.assertEqual(in_kwargs["credential_item_ids"], ["cred_ott_1", "cred_ott_2"])
+        finally:
+            os.environ.pop("TINYFISH_PROFILE_ID", None)
+            os.environ.pop("TINYFISH_CREDENTIAL_ITEM_IDS", None)
+            if old_prof is not None:
+                os.environ["TINYFISH_BROWSER_PROFILE"] = old_prof
+            else:
+                os.environ.pop("TINYFISH_BROWSER_PROFILE", None)
+            if old_country is not None:
+                os.environ["TINYFISH_PROXY_COUNTRY"] = old_country
+            else:
+                os.environ.pop("TINYFISH_PROXY_COUNTRY", None)
 
     def test_normaliser_filters_meta_steps_and_maps_extra_steps_to_subscription_trap(self) -> None:
         ts = datetime.now(timezone.utc)
