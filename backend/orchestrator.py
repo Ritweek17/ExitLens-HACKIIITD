@@ -196,7 +196,11 @@ META_STEP_PREFIXES = (
     "capture ",
     "understand ",
     "visual inspection",
-    "check context",
+    "check ",
+    "verify ",
+    "read ",
+    "inspect ",
+    "observe ",
     "document the",
     "report blocked",
     "compile ",
@@ -296,9 +300,9 @@ def build_audit_goal(service: str, test_account: TestAccountRecord | None = None
     if test_account is not None:
         account_clause = (
             f"DEDICATED TEST ACCOUNT GATE: This run is bound to dedicated test account "
-            f"'{test_account.masked_identifier}' ({test_account.id}). If the page displays a logged-in "
-            "account email or username that clearly belongs to a different personal account, "
-            "STOP IMMEDIATELY and return blocked=true, account_mismatch=true, and "
+            f"'{test_account.masked_identifier}' ({test_account.id}). Do NOT click into Profile pages or "
+            "other tabs to search for an email; only if the current screen already displays a conflicting "
+            "personal account email, STOP IMMEDIATELY and return blocked=true, account_mismatch=true, and "
             "block_reason='Account identity mismatch with approved dedicated test account'. "
         )
     return (
