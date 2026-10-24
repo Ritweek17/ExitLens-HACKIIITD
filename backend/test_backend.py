@@ -681,6 +681,143 @@ class ApiContractIntegrationTests(unittest.TestCase):
                     sum(s["weight"] for s in report["friction_signals"]),
                 )
 
+    def test_test_accounts_registry_and_verification_gate(self) -> None:
+        accounts = self.client.get("/test-accounts").json()
+        self.assertGreaterEqual(len(accounts), 4)
+        ids = {a["id"] for a in accounts}
+        self.assertIn("tacct_streamflix_in", ids)
+
+        # Reject unregistered or personal account reference
+        r_bad = self.client.post(
+            "/runs",
+            json={
+                "service": "StreamFlix India",
+                "human_approved": True,
+                "test_account_confirmed": True,
+                "test_account_ref": "personal_account_123",
+            },
+        )
+        self.assertEqual(r_bad.status_code, 409)
+        self.assertEqual(r_bad.json()["error"]["code"], "account_verification_failed")
+
+        # Accept registered dedicated_test account reference and propagate to report
+        r_ok = self.client.post(
+            "/runs",
+            json={
+                "service": "StreamFlix India",
+                "human_approved": True,
+                "test_account_confirmed": True,
+                "test_account_ref": "tacct_streamflix_in",
+            },
+        )
+        self.assertEqual(r_ok.status_code, 201)
+        run_id = r_ok.json()["run_id"]
+        rep = self.client.get(f"/runs/{run_id}/report").json()
+        self.assertEqual(rep["test_account_ref"], "tacct_streamflix_in")
+        self.assertTrue(rep["account_verified"])
+
+    def test_runtime_account_mismatch_stops_with_account_verification_failed(self) -> None:
+        ts = datetime.now(timezone.utc)
+        rep = normalise_and_build_report(
+            "run_mismatch",
+            "StreamFlix India",
+            [(1, "Opened account page", ts)],
+            None,
+            {
+                "blocked": True,
+                "account_mismatch": True,
+                "block_reason": "Logged-in user is personal@gmail.com, not audit.streamflix@test.exitlens.in",
+                "stopped_at_button": None,
+                "cancellation_completed": False,
+                "findings": [],
+            },
+            test_account_ref="tacct_streamflix_in",
+        )
+        self.assertEqual(rep.stop_reason, "account_verification_failed")
+        self.assertEqual(rep.outcome, "unverified")
+        self.assertFalse(rep.account_verified)
+        self.assertFalse(rep.safety_gate_stopped)
+
+    def test_manual_stop_endpoint_sets_user_stopped(self) -> None:
+        created = self.client.post(
+            "/runs",
+            json={
+                "service": "StreamFlix India",
+                "human_approved": True,
+                "test_account_confirmed": True,
+            },
+        )
+        run_id = created.json()["run_id"]
+        stopped = self.client.post(f"/runs/{run_id}/stop", json={"reason": "user_stopped"})
+        self.assertEqual(stopped.status_code, 200)
+        self.assertEqual(stopped.json()["stop_reason"], "user_stopped")
+        rep = self.client.get(f"/runs/{run_id}/report").json()
+        self.assertEqual(rep["stop_reason"], "user_stopped")
+        self.assertTrue(rep["safety_gate_stopped"])
+
+    def test_v2_audits_multi_stage_human_gate_lifecycle(self) -> None:
+        # 1. Create audit -> pending_approval
+        created = self.client.post(
+            "/api/v1/audits",
+            json={
+                "service": {"name": "StreamFlix India", "startUrl": "https://example.in/account"},
+                "countryCode": "IN",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        audit = created.json()
+        audit_id = audit["id"]
+        self.assertEqual(audit["status"], "pending_approval")
+
+        # 2. Cannot start before approval
+        start_early = self.client.post(f"/api/v1/audits/{audit_id}/start")
+        self.assertEqual(start_early.status_code, 409)
+        self.assertEqual(start_early.json()["error"]["code"], "audit_not_approved")
+
+        # 3. Reject unregistered testAccountRef on approve
+        bad_approve = self.client.post(
+            f"/api/v1/audits/{audit_id}/approve",
+            json={
+                "serviceApproved": True,
+                "testAccountApproved": True,
+                "testAccountRef": "not_a_test_account",
+            },
+        )
+        self.assertEqual(bad_approve.status_code, 409)
+        self.assertEqual(bad_approve.json()["error"]["code"], "account_verification_failed")
+
+        # 4. Approve with registered dedicated_test account -> approved
+        approved = self.client.post(
+            f"/api/v1/audits/{audit_id}/approve",
+            json={
+                "serviceApproved": True,
+                "testAccountApproved": True,
+                "testAccountRef": "tacct_streamflix_in",
+            },
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["status"], "approved")
+        self.assertEqual(approved.json()["testAccount"]["reference"], "tacct_streamflix_in")
+        self.assertEqual(approved.json()["testAccount"]["kind"], "dedicated_test")
+
+        # 5. Explicitly start -> 202 Accepted
+        started = self.client.post(f"/api/v1/audits/{audit_id}/start")
+        self.assertEqual(started.status_code, 202)
+
+        # 6. Stream events and fetch final report
+        ev_res = self.client.get(f"/api/v1/audits/{audit_id}/events")
+        self.assertEqual(ev_res.status_code, 200)
+
+        rep_res = self.client.get(f"/api/v1/audits/{audit_id}/report")
+        self.assertEqual(rep_res.status_code, 200)
+        rep = rep_res.json()
+        self.assertEqual(rep["friction_score"], 65)
+        self.assertEqual(rep["test_account_ref"], "tacct_streamflix_in")
+
+        final_audit = self.client.get(f"/api/v1/audits/{audit_id}").json()
+        self.assertEqual(final_audit["status"], "report_ready")
+        self.assertEqual(final_audit["stepCount"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()

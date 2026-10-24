@@ -3,7 +3,7 @@
 This file has two parts:
 
 - **v1 - Hackathon contract (current, implemented).** The frontend builds against this. The backend serves exactly these shapes, and FastAPI's `/docs` page (http://localhost:8000/docs) shows the same models (`backend/models.py`). **Do not change v1 shapes without telling the other side.**
-- **v2 - Full audit contract (post-hackathon target).** The original framework-neutral proposal, kept unchanged for later.
+- **v2 - Full audit contract (`/api/v1/audits`, also implemented).** Multi-stage human approval gate (`pending_approval` -> `approved` -> `running` -> `stopped` / `report_ready`) backed by the same orchestrator and dedicated test-account registry (`backend/v2_audits.py`, `backend/test_accounts.py`).
 
 ---
 
@@ -39,6 +39,22 @@ This file has two parts:
 ]
 ```
 
+### `GET /test-accounts`
+
+`200 OK` -> `TestAccountPublic[]` (server-managed dedicated test accounts; never exposes raw credentials):
+
+```json
+[
+  {
+    "id": "tacct_streamflix_in",
+    "service": "StreamFlix India",
+    "masked_identifier": "audit.streamflix@test.exitlens.in",
+    "kind": "dedicated_test",
+    "has_cloud_credentials": false
+  }
+]
+```
+
 ### `POST /runs`
 
 Create and start an audit run.
@@ -60,11 +76,12 @@ Request:
 | `start_url` | string (URL) | no | Must be `https://` when given. |
 | `human_approved` | boolean | yes | Must be `true`. |
 | `test_account_confirmed` | boolean | yes | Must be `true`. |
+| `test_account_ref` | string | no | Optional server-managed dedicated test account ID from `GET /test-accounts` (e.g. `"tacct_streamflix_in"`). |
 
 Responses:
 
 - `201 Created` -> `{"run_id": "run_ab12cd34"}`
-- `409 Conflict` -> `{"error": {"code": "approval_required", "message": "..."}}` when either approval flag is not `true`.
+- `409 Conflict` -> `{"error": {"code": "approval_required", "message": "..."}}` when either approval flag is not `true`, or `{"error": {"code": "account_verification_failed", "message": "..."}}` when `test_account_ref` is not a registered `dedicated_test` account.
 - `422 Unprocessable Entity` -> missing or invalid fields (FastAPI's default validation body), `{"error": {"code": "invalid_start_url", ...}}` for a non-HTTPS `start_url`, or `{"error": {"code": "host_not_allowed", ...}}` when the server operator restricts audit targets with `ALLOWED_AUDIT_HOSTS` and the `start_url` host is not allowed (presets and the demo tunnel are always allowed; with no allowlist set, any HTTPS host is accepted).
 
 ### `GET /runs/{run_id}/events`
@@ -96,6 +113,16 @@ Server-Sent Events stream (`text/event-stream`). Every message uses only `data:`
 Event order: one or more `step` -> `stopped` -> `report_ready`. On failure a single terminal `error` event is sent instead of `stopped` + `report_ready` (its `label` explains the failure and `stop_reason` stays `null`); the report is still available from `GET /runs/{run_id}/report` (with `outcome: "partial_evidence"` and the observed steps preserved in `evidence` if steps were recorded before the timeout/error, or `outcome: "failed"` if no steps were recorded). **After `report_ready` or `error`, the server closes the stream; the client should call `eventSource.close()`** (otherwise `EventSource` reconnects automatically).
 
 `404 Not Found` (`run_not_found`) for an unknown `run_id`.
+
+### `POST /runs/{run_id}/stop`
+
+Allows a supervising human to immediately stop a live or pending run (`reason` defaults to `"user_stopped"`):
+
+```json
+{ "reason": "user_stopped" }
+```
+
+`200 OK` -> `{"run_id": "run_ab12cd34", "status": "stopped", "stop_reason": "user_stopped"}`
 
 ### `GET /runs/{run_id}/report`
 

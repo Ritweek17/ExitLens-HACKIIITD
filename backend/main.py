@@ -16,8 +16,25 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from mock_data import PRESETS, mock_report, now
-from models import ErrorResponse, Report, RunCreate, RunCreated, RunEvent, ServicePreset
-from orchestrator import is_start_url_allowed, should_use_live_tinyfish, stream_audit_run
+from models import (
+    ErrorResponse,
+    Report,
+    RunCreate,
+    RunCreated,
+    RunEvent,
+    RunStopRequest,
+    RunStopped,
+    ServicePreset,
+    TestAccountPublic,
+)
+from orchestrator import (
+    is_start_url_allowed,
+    should_use_live_tinyfish,
+    stop_audit_run,
+    stream_audit_run,
+)
+from test_accounts import list_dedicated_test_accounts, verify_dedicated_test_account
+from v2_audits import build_v2_router
 
 load_dotenv()
 
@@ -110,6 +127,20 @@ def list_presets() -> list[ServicePreset]:
     return PRESETS
 
 
+@app.get("/test-accounts", response_model=list[TestAccountPublic])
+def list_test_accounts() -> list[TestAccountPublic]:
+    return [
+        TestAccountPublic(
+            id=acct.id,
+            service=acct.service,
+            masked_identifier=acct.masked_identifier,
+            kind="dedicated_test",
+            has_cloud_credentials=bool(acct.profile_id or acct.credential_item_ids),
+        )
+        for acct in list_dedicated_test_accounts()
+    ]
+
+
 # Mock dark-pattern subscription site used as a safe, reliable audit target.
 # TinyFish runs in the cloud, so expose this publicly (e.g. ngrok) for live runs.
 app.mount(
@@ -141,11 +172,23 @@ def create_run(body: RunCreate) -> RunCreated:
             "This server only audits allow-listed hosts (ALLOWED_AUDIT_HOSTS). Use a preset or ask the operator to allow this host.",
         )
 
+    verified_account_ref: str | None = None
+    if body.test_account_ref is not None:
+        verified_account = verify_dedicated_test_account(body.test_account_ref)
+        if verified_account is None:
+            raise ApiError(
+                409,
+                "account_verification_failed",
+                f"Test account '{body.test_account_ref}' is not a registered dedicated_test account.",
+            )
+        verified_account_ref = verified_account.id
+
     prune_runs()
     run_id = f"run_{uuid.uuid4().hex[:8]}"
     RUNS[run_id] = {
         "service": body.service,
         "start_url": str(body.start_url) if body.start_url else None,
+        "test_account_ref": verified_account_ref,
         "created_at": now(),
         "created_mono": time.monotonic(),
         "events": None,
@@ -185,6 +228,18 @@ async def run_events(run_id: str) -> StreamingResponse:
     )
 
 
+@app.post(
+    "/runs/{run_id}/stop",
+    response_model=RunStopped,
+    responses={404: {"model": ErrorResponse}},
+)
+def stop_run(run_id: str, body: RunStopRequest | None = None) -> RunStopped:
+    run = get_run(run_id)
+    reason = body.reason if body is not None else "user_stopped"
+    final_reason = stop_audit_run(run_id, run, reason=reason)
+    return RunStopped(run_id=run_id, stop_reason=final_reason)
+
+
 @app.get(
     "/runs/{run_id}/report",
     response_model=Report,
@@ -195,10 +250,25 @@ def run_report(run_id: str) -> Report:
     if run.get("report") is not None:
         return run["report"]
     if not should_use_live_tinyfish(run.get("start_url"), run["service"]):
-        run["report"] = mock_report(run_id, run["service"], run.get("start_url"))
+        run["report"] = mock_report(
+            run_id,
+            run["service"],
+            run.get("start_url"),
+            test_account_ref=run.get("test_account_ref"),
+        )
         return run["report"]
     raise ApiError(
         409,
         "report_not_ready",
         "Audit is still running or has not streamed events yet. Wait for the `report_ready` SSE event.",
     )
+
+
+app.include_router(
+    build_v2_router(
+        runs_store=RUNS,
+        prune_fn=prune_runs,
+        api_error_cls=ApiError,
+        mock_delay_getter=lambda: MOCK_STEP_DELAY_SECONDS,
+    )
+)

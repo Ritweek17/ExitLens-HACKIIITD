@@ -13,7 +13,13 @@ from pydantic import BaseModel, Field, HttpUrl
 
 EventType = Literal["step", "stopped", "report_ready", "error"]
 
-StopReason = Literal["pre_cancellation_boundary", "blocked", "user_stopped", "error"]
+StopReason = Literal[
+    "pre_cancellation_boundary",
+    "blocked",
+    "account_verification_failed",
+    "user_stopped",
+    "error",
+]
 
 # Box E: Audit verification & completion outcomes
 AuditOutcome = Literal[
@@ -73,10 +79,39 @@ class RunCreate(BaseModel):
         ...,
         description="The run uses a dedicated test account (or no login), never a real personal account. Must be true.",
     )
+    test_account_ref: str | None = Field(
+        None,
+        description="Optional server-managed dedicated test account reference (e.g. 'tacct_streamflix_in'). Verified against GET /test-accounts when supplied.",
+        examples=["tacct_streamflix_in"],
+    )
 
 
 class RunCreated(BaseModel):
     run_id: str = Field(..., examples=["run_ab12cd34"])
+
+
+class RunStopRequest(BaseModel):
+    reason: StopReason = Field(
+        "user_stopped",
+        description="Reason the supervising human stopped the run.",
+    )
+
+
+class RunStopped(BaseModel):
+    run_id: str
+    status: Literal["stopped"] = "stopped"
+    stop_reason: StopReason
+
+
+class TestAccountPublic(BaseModel):
+    id: str = Field(..., examples=["tacct_streamflix_in"])
+    service: str = Field(..., examples=["StreamFlix India"])
+    masked_identifier: str = Field(..., examples=["audit.streamflix@test.exitlens.in"])
+    kind: Literal["dedicated_test"] = "dedicated_test"
+    has_cloud_credentials: bool = Field(
+        False,
+        description="True when a TinyFish browser profile or credential vault item is bound to this test account.",
+    )
 
 
 class ServicePreset(BaseModel):
@@ -88,6 +123,11 @@ class ServicePreset(BaseModel):
         None,
         description="Real-world HTTPS cancellation/account entry URL for live external audits.",
         examples=["https://www.netflix.com/youraccount"],
+    )
+    default_test_account_ref: str | None = Field(
+        None,
+        description="Default registered dedicated test account ID for this preset.",
+        examples=["tacct_streamflix_in"],
     )
     description: str
     expected_outcome: AuditOutcome = Field("completed_with_evidence")
@@ -166,6 +206,13 @@ class Report(BaseModel):
         ..., description="True if the agent stopped before the final irreversible cancellation action."
     )
     stop_reason: StopReason
+    test_account_ref: str | None = Field(
+        None, description="Verified dedicated test account reference used for this run, when bound."
+    )
+    account_verified: bool = Field(
+        True,
+        description="True when the runner verified it did not encounter an unapproved/personal account mismatch.",
+    )
     streaming_url: str | None = Field(
         None, description="TinyFish live browser stream URL if captured during the run."
     )
