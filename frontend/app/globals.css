@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FAF9F7;
+  --foreground: #191817;
+  --card: #FFFFFF;
+  --card-border: #E8E5DC;
+  --muted: #64615B;
+  --accent: #242220;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Ensure section anchor targets maintain breathing room below floating navbar */
+[id] {
+  scroll-margin-top: 5.5rem;
+}
+@media (min-width: 640px) {
+  [id] {
+    scroll-margin-top: 6.5rem;
+  }
+}
+
+
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Elegant serif headings */
+h1, h2, h3, .font-heading {
+  font-family: var(--font-serif, "Newsreader", "Lora", "Charter", Georgia, serif);
+  letter-spacing: -0.015em;
+}
+
+/* Restrained, crisp card styling */
+.exitlens-card {
+  background-color: #FFFFFF;
+  border: 1px solid #E8E5DC;
+  border-radius: 0.875rem;
+  box-shadow: 0 1px 3px 0 rgba(20, 19, 18, 0.04), 0 1px 2px -1px rgba(20, 19, 18, 0.03);
+}
+
+/* Subtle focus state */
+input:focus-visible,
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #191817;
+  outline-offset: 2px;
+}
+
+/* Print styling for professional audit reports */
+@media print {
+  body {
+    background-color: #FFFFFF !important;
+    color: #000000 !important;
+  }
+  header, footer, .no-print {
+    display: none !important;
+  }
+  .exitlens-card {
+    border: 1px solid #CCCCCC !important;
+    box-shadow: none !important;
+    page-break-inside: avoid;
+  }
+  a[href]:after {
+    content: "" !important;
+  }
+}
