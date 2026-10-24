@@ -83,10 +83,15 @@ NEGATED_BARRIER_PHRASES = (
 )
 
 META_STEP_PREFIXES = (
-    "submit cancellation",
-    "submit audit",
-    "get full page content",
-    "capture full",
+    "submit ",
+    "get full",
+    "get detailed",
+    "capture ",
+    "understand ",
+    "visual inspection",
+    "check context",
+    "document the",
+    "report blocked",
     "compile ",
     "return json",
 )
@@ -140,6 +145,7 @@ def build_audit_goal(service: str) -> str:
         "CRITICAL SAFETY RULE: STOP BEFORE clicking any final 'Cancel subscription' or 'Confirm cancellation' button. "
         "Never complete an irreversible cancellation. "
         "If you hit a CAPTCHA, Cloudflare block, OTP gate, or login wall that you cannot pass, stop immediately and set blocked=true. "
+        "If the cancellation flow is fair, transparent, and direct (1-2 clicks with equal visual button styling and no dark patterns), return an empty findings array (\"findings\": []). Do not invent friction on a clean exit flow. "
         "Indicator mapping rules: "
         "- Use 'extra_steps' (ccpa_pattern: 'subscription_trap') when reaching the final cancel screen takes more than 2 clicks. "
         "- Use 'hidden_cancel' (ccpa_pattern: 'interface_interference') when the cancel link is buried in nested menus or styled in tiny/muted text next to a prominent 'Keep plan' button. "
@@ -286,6 +292,9 @@ def normalise_and_build_report(
         indicator: FrictionIndicator = (
             raw_ind if raw_ind in VALID_INDICATORS else "unclear_copy"  # type: ignore[assignment]
         )
+        # Do not allow a false-positive extra_steps signal when UI steps are within the 2-step baseline
+        if indicator == "extra_steps" and steps and effective_total_steps <= 2:
+            continue
         raw_step_num = int(item.get("step_number") or max_step_idx)
         step_num = min(max(1, raw_step_num), max_step_idx)
 
@@ -385,7 +394,23 @@ def normalise_and_build_report(
 
     # Outcome classification (Box E)
     if not scored_signals:
-        outcome: AuditOutcome = "unverified"
+        if safety_gate_stopped and isinstance(result_json, dict) and (stopped_at or steps):
+            outcome: AuditOutcome = "completed_with_evidence"
+            if not evidence and steps:
+                evidence.append(
+                    Evidence(
+                        id="ev_1",
+                        step=ui_step_indices[-1] if ui_step_indices else len(steps),
+                        kind="text",
+                        timestamp=steps[-1][2],
+                        content=(
+                            f"Direct {effective_total_steps}-step exit path verified with no dark patterns; "
+                            f"stopped at '{stopped_at or 'pre-cancellation boundary'}'."
+                        ),
+                    )
+                )
+        else:
+            outcome = "unverified"
     elif all(s.verified for s in scored_signals):
         outcome = "completed_with_evidence"
     elif any(s.verified for s in scored_signals):

@@ -157,6 +157,29 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertEqual(report.friction_signals[0].step_refs, [1, 2, 3, 4, 5, 6])
         self.assertEqual(report.ccpa_alignment[0].pattern, "subscription_trap")
 
+    def test_normaliser_handles_clean_two_step_fair_flow(self) -> None:
+        ts = datetime.now(timezone.utc)
+        steps = [
+            (1, "Navigate to demo site for cancellation journey audit", ts),
+            (2, "Understand page content before interacting", ts),
+            (3, "Start the cancellation flow", ts),
+            (4, "Visual inspection of confirmation screen layout", ts),
+            (5, "Submit cancellation journey audit findings", ts),
+        ]
+        result_json = {
+            "blocked": False,
+            "block_reason": None,
+            "stopped_at_button": "Confirm cancellation",
+            "cancellation_completed": False,
+            "findings": [],
+        }
+        report = normalise_and_build_report("run_fair", "QuickCart Pro", steps, None, result_json)
+        self.assertEqual(report.outcome, "completed_with_evidence")
+        self.assertEqual(report.friction_score, 0)
+        self.assertEqual(report.friction_signals, [])
+        self.assertEqual(len(report.evidence), 1)
+        self.assertTrue(report.safety_gate_stopped)
+
     def test_should_use_live_tinyfish_respects_fallback_hosts_and_public_base(self) -> None:
         import os
 
