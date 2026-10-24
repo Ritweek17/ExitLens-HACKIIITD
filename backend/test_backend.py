@@ -223,6 +223,32 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertEqual(report.friction_signals[0].step_refs, [1, 2, 3, 4, 5, 6])
         self.assertEqual(report.ccpa_alignment[0].pattern, "subscription_trap")
 
+    def test_normaliser_tolerates_malformed_agent_numbers(self) -> None:
+        ts = datetime.now(timezone.utc)
+        steps = [(1, "Click Settings", ts), (2, "Click Cancel", ts)]
+        result_json = {
+            "blocked": False,
+            "block_reason": None,
+            "stopped_at_button": "Confirm cancellation",
+            "cancellation_completed": False,
+            "findings": [
+                {
+                    "indicator": "hidden_cancel",
+                    "title": "Tiny link",
+                    "description": "11px grey link",
+                    "step_number": "two",
+                    "step_refs": ["1", "bad", True, None, 99],
+                    "evidence_quote": "I still want to cancel",
+                    "ccpa_pattern": "interface_interference",
+                }
+            ],
+        }
+        report = normalise_and_build_report("run_bad", "Svc", steps, None, result_json)
+        self.assertEqual(report.friction_score, 20)
+        # step_number "two" falls back to the last step; refs are parsed, clamped and deduplicated
+        self.assertEqual(report.friction_signals[0].step_refs, [1, 2])
+        self.assertEqual(report.evidence[0].step, 2)
+
     def test_normaliser_handles_clean_two_step_fair_flow(self) -> None:
         ts = datetime.now(timezone.utc)
         steps = [
@@ -269,6 +295,62 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
                 os.environ["PUBLIC_DEMO_BASE_URL"] = old_base
             else:
                 os.environ.pop("PUBLIC_DEMO_BASE_URL", None)
+
+
+class SharedRunStreamTests(unittest.TestCase):
+    def test_concurrent_and_late_subscribers_share_one_audit_execution(self) -> None:
+        import asyncio
+        from unittest import mock
+
+        import orchestrator
+        from mock_data import mock_step_event
+
+        calls = 0
+
+        async def fake_produce(run_id, run_state, mock_delay_seconds=0.0):
+            nonlocal calls
+            calls += 1
+            for i in range(1, 4):
+                yield mock_step_event(i, f"step {i}")
+                await asyncio.sleep(0.01)
+
+        async def collect(run_state):
+            return [ev.label async for ev in orchestrator.stream_audit_run("run_x", run_state, 0)]
+
+        async def scenario():
+            state = {"service": "Svc", "start_url": None, "events": None, "report": None}
+            first, second = await asyncio.gather(collect(state), collect(state))
+            late = await collect(state)
+            return first, second, late
+
+        with mock.patch.object(orchestrator, "_produce_audit_events", fake_produce):
+            first, second, late = asyncio.run(scenario())
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(first, ["step 1", "step 2", "step 3"])
+        self.assertEqual(second, first)
+        self.assertEqual(late, first)
+
+    def test_driver_failure_ends_stream_with_error_and_failed_report(self) -> None:
+        import asyncio
+        from unittest import mock
+
+        import orchestrator
+
+        async def exploding_produce(run_id, run_state, mock_delay_seconds=0.0):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover - makes this an async generator
+
+        async def scenario():
+            state = {"service": "Svc", "start_url": None, "events": None, "report": None}
+            evs = [ev async for ev in orchestrator.stream_audit_run("run_y", state, 0)]
+            return evs, state
+
+        with mock.patch.object(orchestrator, "_produce_audit_events", exploding_produce):
+            evs, state = asyncio.run(scenario())
+
+        self.assertEqual(evs[-1].type, "error")
+        self.assertEqual(state["report"].outcome, "failed")
 
 
 class ApiContractIntegrationTests(unittest.TestCase):

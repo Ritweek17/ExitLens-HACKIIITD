@@ -387,6 +387,17 @@ def detect_barrier(
     return None
 
 
+def _safe_int(value: Any, default: int | None) -> int | None:
+    """Parse agent-provided numbers defensively; bools and non-numeric values yield `default`."""
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _is_meta_step(label: str) -> bool:
     lowered = label.strip().lower()
     return any(lowered.startswith(prefix) for prefix in META_STEP_PREFIXES)
@@ -481,15 +492,15 @@ def normalise_and_build_report(
         # Do not allow a false-positive extra_steps signal when UI steps are within the 2-step baseline
         if indicator == "extra_steps" and steps and effective_total_steps <= 2:
             continue
-        raw_step_num = int(item.get("step_number") or max_step_idx)
+        raw_step_num = _safe_int(item.get("step_number"), max_step_idx)
         step_num = min(max(1, raw_step_num), max_step_idx)
 
         raw_refs = item.get("step_refs")
-        if isinstance(raw_refs, list) and raw_refs:
-            step_refs = sorted(
-                {min(max(1, int(r)), max_step_idx) for r in raw_refs if isinstance(r, (int, float))}
-            )
-        else:
+        step_refs = []
+        if isinstance(raw_refs, list):
+            parsed_refs = (_safe_int(r, None) for r in raw_refs)
+            step_refs = sorted({min(max(1, r), max_step_idx) for r in parsed_refs if r is not None})
+        if not step_refs:
             step_refs = [step_num]
 
         if indicator == "extra_steps" and len(step_refs) <= 1 and len(ui_step_indices) > 1:
@@ -651,13 +662,80 @@ async def stream_audit_run(
     run_state: dict[str, Any],
     mock_delay_seconds: float = 0.6,
 ) -> AsyncIterator[RunEvent]:
-    """Stream SSE RunEvents for a run (real TinyFish if start_url + API key present, else mock fallback)."""
-    # If already finished, replay cached events so page refreshes never re-trigger TinyFish
-    if run_state.get("events"):
-        for ev in run_state["events"]:
+    """Stream SSE RunEvents for a run, executing the audit at most once per run.
+
+    The audit runs in a background task that appends events to a shared buffer. Every
+    subscriber (first connection, reconnect, duplicate EventSource, page refresh) reads that
+    buffer, so a client disconnecting never cancels the run and never triggers a second one.
+    """
+    buffer: list[RunEvent] = run_state.setdefault("buffer", [])
+
+    # Finished run: replay the buffer without touching any event-loop primitives.
+    if run_state.get("done"):
+        for ev in buffer:
             yield ev
         return
 
+    if "task" not in run_state:
+        run_state["cond"] = asyncio.Condition()
+        run_state["task"] = asyncio.create_task(_drive_audit(run_id, run_state, mock_delay_seconds))
+
+    cond: asyncio.Condition = run_state["cond"]
+    index = 0
+    while True:
+        async with cond:
+            await cond.wait_for(lambda: index < len(buffer) or run_state.get("done", False))
+        while index < len(buffer):
+            yield buffer[index]
+            index += 1
+        if run_state.get("done", False):
+            return
+
+
+async def _drive_audit(
+    run_id: str,
+    run_state: dict[str, Any],
+    mock_delay_seconds: float,
+) -> None:
+    """Background driver: pump `_produce_audit_events` into the shared buffer exactly once."""
+    buffer: list[RunEvent] = run_state["buffer"]
+    cond: asyncio.Condition = run_state["cond"]
+    try:
+        async for ev in _produce_audit_events(run_id, run_state, mock_delay_seconds):
+            buffer.append(ev)
+            async with cond:
+                cond.notify_all()
+    except Exception as exc:  # noqa: BLE001 - always end the stream with a terminal event
+        if run_state.get("report") is None:
+            run_state["report"] = normalise_and_build_report(
+                run_id=run_id,
+                service=run_state["service"],
+                steps=[],
+                streaming_url=None,
+                result_json=None,
+                error_message=f"Audit failed unexpectedly: {exc}",
+            )
+        buffer.append(
+            RunEvent(
+                type="error",
+                step=len([e for e in buffer if e.type == "step"]),
+                label=f"Audit failed: {exc}",
+                timestamp=now(),
+                stop_reason="error",
+            )
+        )
+    finally:
+        run_state["done"] = True
+        async with cond:
+            cond.notify_all()
+
+
+async def _produce_audit_events(
+    run_id: str,
+    run_state: dict[str, Any],
+    mock_delay_seconds: float = 0.6,
+) -> AsyncIterator[RunEvent]:
+    """Generate RunEvents (real TinyFish if start_url + API key present, else mock fallback)."""
     raw_start_url: str | None = run_state.get("start_url")
     service: str = run_state["service"]
     start_url: str | None = resolve_effective_start_url(service, raw_start_url)
@@ -754,14 +832,24 @@ async def stream_audit_run(
 
     await worker_future
 
-    report = normalise_and_build_report(
-        run_id=run_id,
-        service=service,
-        steps=observed_steps,
-        streaming_url=streaming_url,
-        result_json=result_json,
-        error_message=error_message,
-    )
+    try:
+        report = normalise_and_build_report(
+            run_id=run_id,
+            service=service,
+            steps=observed_steps,
+            streaming_url=streaming_url,
+            result_json=result_json,
+            error_message=error_message,
+        )
+    except Exception as exc:  # noqa: BLE001 - never leave the SSE stream without a terminal event
+        report = normalise_and_build_report(
+            run_id=run_id,
+            service=service,
+            steps=observed_steps,
+            streaming_url=streaming_url,
+            result_json=None,
+            error_message=f"Could not process agent output: {exc}",
+        )
     run_state["report"] = report
 
     last_step = len(observed_steps)
