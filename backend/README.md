@@ -18,6 +18,18 @@ cp .env.example .env              # then put your TINYFISH_API_KEY in .env
 
 ## Run the server
 
+### Option A: One-command live TinyFish + public tunnel launcher (recommended for demo)
+
+Automatically opens an HTTPS tunnel (`localhost.run`), sets `PUBLIC_DEMO_BASE_URL`, and starts FastAPI on `http://localhost:8000`:
+
+```bash
+cd backend
+source venv/bin/activate
+python start_live_demo.py
+```
+
+### Option B: Standard uvicorn server
+
 ```bash
 cd backend
 source venv/bin/activate
