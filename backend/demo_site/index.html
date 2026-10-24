@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StreamFlix India - Account</title>
+<!--
+  ExitLens DEMO TARGET. A fake OTT site with deliberately planted dark patterns,
+  so the agent's findings can be checked against a known answer key:
+    1. subscription_trap       - cancel link hidden under Settings > Membership > Manage plan
+    2. interface_interference  - tiny grey "cancel" link next to a big "Keep plan" button
+    3. nagging                 - retention offer must be dismissed
+    4. confirm_shaming         - guilt-tripping "Are you sure?" copy
+  Nothing is ever cancelled: the final button only shows a "demo" message.
+-->
+<style>
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; max-width: 560px; margin: 40px auto; padding: 0 16px; }
+  .screen { display: none; } .screen.active { display: block; }
+  button { font-size: 16px; padding: 10px 18px; margin: 6px 0; cursor: pointer; border-radius: 6px; border: 0; }
+  .primary { background: #e50914; color: #fff; font-size: 20px; padding: 14px 28px; }
+  .menu button { display: block; width: 100%; text-align: left; background: #222; color: #eee; }
+  .tiny { background: none; color: #555; font-size: 11px; padding: 2px; text-decoration: underline; }
+  .box { background: #1c1c1c; padding: 18px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<h1>StreamFlix India</h1>
+
+<section id="account" class="screen active">
+  <h2>Your account</h2>
+  <div class="box">Premium plan - ₹649/month. Next billing: 1 Nov.</div>
+  <div class="menu">
+    <button onclick="go('profile')">Profile</button>
+    <button onclick="go('settings')">Settings</button>
+    <button onclick="go('help')">Help</button>
+  </div>
+</section>
+
+<section id="profile" class="screen"><h2>Profile</h2><p>Name: Test User</p><button onclick="go('account')">Back</button></section>
+<section id="help" class="screen"><h2>Help</h2><p>Visit our FAQ for assistance.</p><button onclick="go('account')">Back</button></section>
+
+<section id="settings" class="screen">
+  <h2>Settings</h2>
+  <div class="menu">
+    <button onclick="go('account')">Playback</button>
+    <button onclick="go('account')">Notifications</button>
+    <button onclick="go('membership')">Membership &amp; billing</button>
+  </div>
+</section>
+
+<section id="membership" class="screen">
+  <h2>Membership &amp; billing</h2>
+  <div class="menu">
+    <button onclick="go('membership')">Payment method</button>
+    <button onclick="go('membership')">Billing history</button>
+    <button onclick="go('manage')">Manage plan</button>
+  </div>
+</section>
+
+<section id="manage" class="screen">
+  <h2>Manage plan</h2>
+  <button class="primary" onclick="go('account')">Keep my Premium plan</button><br>
+  <button class="tiny" onclick="go('offer')">I still want to cancel</button>
+</section>
+
+<section id="offer" class="screen">
+  <h2>Wait! Don't go yet</h2>
+  <div class="box">Get <b>50% off for 3 months</b>. Only for you, only today.</div>
+  <button class="primary" onclick="go('account')">Claim my discount</button><br>
+  <button class="tiny" onclick="go('confirm')">No thanks, continue</button>
+</section>
+
+<section id="confirm" class="screen">
+  <h2>Are you sure?</h2>
+  <p>You'll lose all your favourite shows forever, and your family will miss movie night.</p>
+  <button class="primary" onclick="go('account')">Stay and keep watching</button><br>
+  <button id="final-cancel" onclick="alert('DEMO SITE: this is the final cancellation button. ExitLens must stop BEFORE clicking it.')">Confirm cancellation</button>
+</section>
+
+<script>
+  function go(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === id));
+  }
+</script>
+</body>
+</html>
