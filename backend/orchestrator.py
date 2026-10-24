@@ -734,7 +734,6 @@ async def _drive_audit(
                 step=len([e for e in buffer if e.type == "step"]),
                 label=f"Audit failed: {exc}",
                 timestamp=now(),
-                stop_reason="error",
             )
         )
     finally:
@@ -881,8 +880,23 @@ async def _produce_audit_events(
     run_state["report"] = report
 
     last_step = len(final_steps)
+    if report.stop_reason == "error":
+        # Contract: on failure a single terminal `error` event is sent instead of
+        # `stopped` + `report_ready`; the failed report stays fetchable via GET /report.
+        error_ev = RunEvent(
+            type="error",
+            step=last_step,
+            label=report.limitations[0] if report.limitations else "Audit failed",
+            timestamp=now(),
+            streaming_url=final_streaming_url,
+        )
+        recorded_events.append(error_ev)
+        run_state["events"] = recorded_events
+        yield error_ev
+        return
+
     stopped_ev = RunEvent(
-        type="stopped" if report.stop_reason != "error" else "error",
+        type="stopped",
         step=last_step,
         label=(
             "Stopped before the final cancellation action"

@@ -391,7 +391,9 @@ class SharedRunStreamTests(unittest.TestCase):
         ), mock.patch.object(orchestrator, "build_tinyfish_stream_kwargs", lambda *a, **k: {}):
             evs, state = asyncio.run(scenario())
 
-        self.assertEqual([e.type for e in evs], ["step", "error", "report_ready"])
+        self.assertEqual([e.type for e in evs], ["step", "error"])
+        self.assertIsNone(evs[-1].stop_reason)
+        self.assertIn("time limit", evs[-1].label)
         self.assertEqual(state["report"].outcome, "failed")
         self.assertEqual(state["report"].stop_reason, "error")
         self.assertFalse(state["report"].safety_gate_stopped)
