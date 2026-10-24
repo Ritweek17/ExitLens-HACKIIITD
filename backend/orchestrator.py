@@ -27,6 +27,7 @@ from models import (
     StopReason,
 )
 from scoring import INDICATOR_SEVERITY, score_signals
+from test_accounts import TestAccountRecord, verify_dedicated_test_account
 
 VALID_INDICATORS: set[str] = {
     "extra_steps",
@@ -119,6 +120,7 @@ AUDIT_OUTPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "blocked": {"type": "boolean"},
         "block_reason": {"type": "string", "nullable": True},
+        "account_mismatch": {"type": "boolean"},
         "stopped_at_button": {"type": "string", "nullable": True},
         "cancellation_completed": {"type": "boolean"},
         "findings": {
@@ -191,14 +193,20 @@ META_STEP_PREFIXES = (
     "extract ",
     "get full",
     "get detailed",
+    "get visual",
     "capture ",
     "understand ",
     "visual inspection",
-    "check context",
+    "visually ",
+    "check ",
+    "verify ",
+    "read ",
+    "inspect ",
+    "observe ",
     "document the",
     "report blocked",
     "compile ",
-    "return json",
+    "return ",
 )
 
 CCPA_DEFAULT_RATIONALES: dict[CcpaPattern, str] = {
@@ -289,13 +297,27 @@ def should_use_live_tinyfish(start_url: str | None, service: str = "") -> bool:
     return bool(host) and host not in DEMO_FALLBACK_HOSTS
 
 
-def build_audit_goal(service: str) -> str:
+def build_audit_goal(service: str, test_account: TestAccountRecord | None = None) -> str:
+    account_clause = ""
+    if test_account is not None:
+        account_clause = (
+            f"DEDICATED TEST ACCOUNT GATE: This run is bound to dedicated test account "
+            f"'{test_account.masked_identifier}' ({test_account.id}). Do NOT click into Profile pages or "
+            "other tabs to search for an email; only if the current screen already displays a conflicting "
+            "personal account email, STOP IMMEDIATELY and return blocked=true, account_mismatch=true, and "
+            "block_reason='Account identity mismatch with approved dedicated test account'. "
+        )
     return (
         f"You are auditing the subscription cancellation journey for '{service}' in India. "
         "Navigate toward cancelling the subscription and observe every step, dark pattern, or barrier. "
         "CRITICAL SAFETY RULE: STOP BEFORE clicking any final 'Cancel subscription' or 'Confirm cancellation' button. "
         "Never complete an irreversible cancellation. "
-        "If you hit a CAPTCHA, Cloudflare block, OTP gate, or login wall that you cannot pass, stop immediately and set blocked=true. "
+        + account_clause
+        + "NAVIGATION DISCIPLINE & ACTION BUDGET (MAX 15 ACTIONS): "
+        "1. If you hit a CAPTCHA, Cloudflare block, OTP gate, or login/sign-in page that you cannot pass with an already-authenticated session, STOP IMMEDIATELY and return blocked=true with a clear block_reason. "
+        "2. Never attempt to navigate to a membership/cancellation URL or click a 'Cancel Now' / 'Manage subscription' link more than ONCE. If the first attempt fails to load, stays on the support article, or lands on a logged-out page (such as a page with a 'Sign in' button or a marketing/signup page with no active plan), STOP IMMEDIATELY and return blocked=true explaining that authentication is required. "
+        "3. Do NOT loop back to help/support articles, retry URL parameters, or repeatedly extract instructions once you see that the cancellation page requires login. "
+        "4. Do NOT waste actions changing country/region dropdowns, language selectors, or expanding unrelated troubleshooting/FAQ accordions. "
         "If the cancellation flow is fair, transparent, and direct (1-2 clicks with equal visual button styling and no dark patterns), return an empty findings array (\"findings\": []). Do not invent friction on a clean exit flow. "
         "Indicator mapping rules: "
         "- Use 'extra_steps' (ccpa_pattern: 'subscription_trap') when reaching the final cancel screen takes more than 2 clicks. "
@@ -333,7 +355,11 @@ def is_tunnel_demo_url(url: str | None) -> bool:
     return any(host.endswith(suffix) for suffix in TUNNEL_HOST_SUFFIXES)
 
 
-def build_tinyfish_stream_kwargs(start_url: str, goal: str) -> dict[str, Any]:
+def build_tinyfish_stream_kwargs(
+    start_url: str,
+    goal: str,
+    test_account: TestAccountRecord | None = None,
+) -> dict[str, Any]:
     """Build TinyFish `agent.stream()` kwargs with stealth profile, optional India proxy, and JSON schema."""
     from tinyfish import BrowserProfile, ProxyConfig
 
@@ -358,14 +384,16 @@ def build_tinyfish_stream_kwargs(start_url: str, goal: str) -> dict[str, Any]:
         kwargs["proxy_config"] = ProxyConfig(enabled=True, country_code=proxy_country)
 
     if not is_tunnel:
-        profile_id = (os.getenv("TINYFISH_PROFILE_ID") or "").strip()
+        acct_profile_id = test_account.profile_id if test_account else None
+        profile_id = acct_profile_id or (os.getenv("TINYFISH_PROFILE_ID") or "").strip()
         if profile_id:
             kwargs["use_profile"] = True
             kwargs["profile_id"] = profile_id
 
         use_vault_env = (os.getenv("TINYFISH_USE_VAULT") or "").strip().lower()
+        acct_creds = list(test_account.credential_item_ids) if test_account else []
         cred_ids_raw = (os.getenv("TINYFISH_CREDENTIAL_ITEM_IDS") or "").strip()
-        cred_ids = [c.strip() for c in cred_ids_raw.split(",") if c.strip()]
+        cred_ids = acct_creds or [c.strip() for c in cred_ids_raw.split(",") if c.strip()]
         if use_vault_env in ("1", "true", "yes") or cred_ids:
             kwargs["use_vault"] = True
             if cred_ids:
@@ -452,8 +480,76 @@ def normalise_and_build_report(
     streaming_url: str | None,
     result_json: dict[str, Any] | None,
     error_message: str | None = None,
+    test_account_ref: str | None = None,
+    stop_override: StopReason | None = None,
 ) -> Report:
     """Box B & D: Normalise raw observations into Evidence, classify indicators, and compute weighted score."""
+    if (
+        isinstance(result_json, dict) and result_json.get("account_mismatch") is True
+    ) or stop_override == "account_verification_failed":
+        reason_str = (
+            str(result_json.get("block_reason") or "")
+            if isinstance(result_json, dict)
+            else ""
+        ) or "Dedicated test account verification failed: logged-in identity did not match the approved test account."
+        last_idx, last_ts = (steps[-1][0], steps[-1][2]) if steps else (0, now())
+        return Report(
+            run_id=run_id,
+            service=service,
+            outcome="unverified",
+            friction_score=0,
+            safety_gate_stopped=False,
+            stop_reason="account_verification_failed",
+            test_account_ref=test_account_ref,
+            account_verified=False,
+            streaming_url=streaming_url,
+            friction_signals=[],
+            evidence=[
+                Evidence(
+                    id="ev_acct",
+                    step=last_idx,
+                    kind="text",
+                    timestamp=last_ts,
+                    content=reason_str,
+                )
+            ],
+            ccpa_alignment=[],
+            limitations=[
+                reason_str,
+                "Audit stopped immediately because only verified dedicated test accounts may be audited.",
+            ],
+        )
+
+    if stop_override is not None and stop_override != "error":
+        partial_ev = [
+            Evidence(
+                id=f"ev_{i}",
+                step=step_idx,
+                kind="text",
+                timestamp=step_ts,
+                content=f"Observed step {step_idx}: {step_label}",
+            )
+            for i, (step_idx, step_label, step_ts) in enumerate(steps, start=1)
+        ]
+        return Report(
+            run_id=run_id,
+            service=service,
+            outcome="partial_evidence" if steps else "unverified",
+            friction_score=0,
+            safety_gate_stopped=True,
+            stop_reason=stop_override,
+            test_account_ref=test_account_ref,
+            account_verified=True,
+            streaming_url=streaming_url,
+            friction_signals=[],
+            evidence=partial_ev,
+            ccpa_alignment=[],
+            limitations=[
+                f"Audit stopped manually before completion ({stop_override}).",
+                f"Preserved {len(steps)} observed step(s) recorded prior to stopping.",
+            ],
+        )
+
     step_labels = [label for _, label, _ in steps]
     barrier = detect_barrier(step_labels, result_json, error_message)
     if barrier:
@@ -479,6 +575,8 @@ def normalise_and_build_report(
             friction_score=0,
             safety_gate_stopped=False,
             stop_reason="blocked",
+            test_account_ref=test_account_ref,
+            account_verified=True,
             streaming_url=streaming_url,
             friction_signals=[],
             evidence=ev_list,
@@ -490,6 +588,35 @@ def normalise_and_build_report(
         )
 
     if error_message:
+        if steps:
+            partial_ev = [
+                Evidence(
+                    id=f"ev_{i}",
+                    step=step_idx,
+                    kind="text",
+                    timestamp=step_ts,
+                    content=f"Observed step {step_idx}: {step_label}",
+                )
+                for i, (step_idx, step_label, step_ts) in enumerate(steps, start=1)
+            ]
+            return Report(
+                run_id=run_id,
+                service=service,
+                outcome="partial_evidence",
+                friction_score=0,
+                safety_gate_stopped=False,
+                stop_reason="error",
+                test_account_ref=test_account_ref,
+                account_verified=True,
+                streaming_url=streaming_url,
+                friction_signals=[],
+                evidence=partial_ev,
+                ccpa_alignment=[],
+                limitations=[
+                    f"Audit interrupted before completion: {error_message}",
+                    f"Partial evidence preserved from {len(steps)} observed step(s) prior to interruption; no verified friction score could be computed.",
+                ],
+            )
         return Report(
             run_id=run_id,
             service=service,
@@ -497,6 +624,8 @@ def normalise_and_build_report(
             friction_score=0,
             safety_gate_stopped=False,
             stop_reason="error",
+            test_account_ref=test_account_ref,
+            account_verified=True,
             streaming_url=streaming_url,
             friction_signals=[],
             evidence=[],
@@ -691,12 +820,54 @@ def normalise_and_build_report(
         friction_score=total_score,
         safety_gate_stopped=safety_gate_stopped,
         stop_reason="pre_cancellation_boundary" if safety_gate_stopped else "error",
+        test_account_ref=test_account_ref,
+        account_verified=True,
         streaming_url=streaming_url,
         friction_signals=scored_signals,
         evidence=evidence,
         ccpa_alignment=ccpa_alignment,
         limitations=limitations,
     )
+
+
+def stop_audit_run(
+    run_id: str,
+    run_state: dict[str, Any],
+    reason: StopReason = "user_stopped",
+) -> StopReason:
+    """Stop an active or idle audit run and ensure its report reflects the stop reason."""
+    if run_state.get("done") and run_state.get("report") is not None:
+        return run_state["report"].stop_reason
+
+    run_state["stop_requested"] = reason
+
+    # If the run has not started its background driver yet, finalize it immediately.
+    if "task" not in run_state:
+        test_account_ref: str | None = run_state.get("test_account_ref")
+        report = normalise_and_build_report(
+            run_id=run_id,
+            service=run_state["service"],
+            steps=[],
+            streaming_url=None,
+            result_json=None,
+            test_account_ref=test_account_ref,
+            stop_override=reason,
+        )
+        stopped_ev = RunEvent(
+            type="stopped" if reason != "error" else "error",
+            step=0,
+            label=f"Audit stopped ({reason})",
+            timestamp=now(),
+            stop_reason=reason if reason != "error" else None,
+        )
+        events = [stopped_ev]
+        if reason != "error":
+            events.append(RunEvent(type="report_ready", step=0, label="Report ready", timestamp=now()))
+        run_state["buffer"] = list(events)
+        run_state["events"] = list(events)
+        run_state["report"] = report
+        run_state["done"] = True
+    return reason
 
 
 async def stream_audit_run(
@@ -779,6 +950,8 @@ async def _produce_audit_events(
     """Generate RunEvents (real TinyFish if start_url + API key present, else mock fallback)."""
     raw_start_url: str | None = run_state.get("start_url")
     service: str = run_state["service"]
+    test_account_ref: str | None = run_state.get("test_account_ref")
+    test_account = verify_dedicated_test_account(test_account_ref) if test_account_ref else None
     start_url: str | None = resolve_effective_start_url(service, raw_start_url)
     api_key = os.getenv("TINYFISH_API_KEY")
 
@@ -786,15 +959,32 @@ async def _produce_audit_events(
     if not should_use_live_tinyfish(raw_start_url, service):
         demo_steps = mock_steps_for_run(service, start_url)
         recorded_events: list[RunEvent] = []
+        observed_demo: list[tuple[int, str, datetime]] = []
         for i, label in enumerate(demo_steps, start=1):
+            if run_state.get("stop_requested"):
+                break
             ev = mock_step_event(i, label)
+            observed_demo.append((i, label, ev.timestamp))
             recorded_events.append(ev)
             yield ev
             if mock_delay_seconds > 0:
                 await asyncio.sleep(mock_delay_seconds)
 
-        report = mock_report(run_id, service, start_url)
-        last = len(demo_steps)
+        stop_req: StopReason | None = run_state.get("stop_requested")
+        if stop_req:
+            report = normalise_and_build_report(
+                run_id=run_id,
+                service=service,
+                steps=observed_demo,
+                streaming_url=None,
+                result_json=None,
+                test_account_ref=test_account_ref,
+                stop_override=stop_req,
+            )
+            last = len(observed_demo)
+        else:
+            report = mock_report(run_id, service, start_url, test_account_ref=test_account_ref)
+            last = len(demo_steps)
         stopped_ev = RunEvent(
             type="stopped",
             step=last,
@@ -834,10 +1024,12 @@ async def _produce_audit_events(
         nonlocal streaming_url, result_json, error_message
         try:
             client = TinyFish(api_key=api_key)
-            goal = build_audit_goal(service)
-            stream_kwargs = build_tinyfish_stream_kwargs(start_url or "", goal)
+            goal = build_audit_goal(service, test_account=test_account)
+            stream_kwargs = build_tinyfish_stream_kwargs(start_url or "", goal, test_account=test_account)
             with client.agent.stream(**stream_kwargs) as stream:
                 for event in stream:
+                    if run_state.get("stop_requested"):
+                        break
                     ts = now()
                     if isinstance(event, StreamingUrlEvent):
                         streaming_url = event.streaming_url
@@ -868,24 +1060,35 @@ async def _produce_audit_events(
     deadline = loop.time() + time_limit
     timed_out = False
     while True:
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=max(0.0, deadline - loop.time()))
-        except asyncio.TimeoutError:
+        if run_state.get("stop_requested"):
+            break
+        remaining = deadline - loop.time()
+        if remaining <= 0:
             timed_out = True
             break
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=min(0.25, remaining))
+        except asyncio.TimeoutError:
+            if loop.time() >= deadline:
+                timed_out = True
+                break
+            continue
         if item is None:
             break
         recorded_events.append(item)
         yield item
 
-    if timed_out:
+    stop_override: StopReason | None = run_state.get("stop_requested")
+    if stop_override:
+        final_error = None
+    elif timed_out:
         # The SDK worker thread cannot be cancelled; stop waiting for it and report from a snapshot.
-        final_error: str | None = f"Audit exceeded the {time_limit:g}s time limit and was stopped."
+        final_error = f"Audit exceeded the {time_limit:g}s time limit and was stopped."
     else:
         await worker_future
         final_error = error_message
     final_steps = list(observed_steps)
-    final_result = None if timed_out else result_json
+    final_result = None if (timed_out or stop_override) else result_json
     final_streaming_url = streaming_url
 
     try:
@@ -896,6 +1099,8 @@ async def _produce_audit_events(
             streaming_url=final_streaming_url,
             result_json=final_result,
             error_message=final_error,
+            test_account_ref=test_account_ref,
+            stop_override=stop_override,
         )
     except Exception as exc:  # noqa: BLE001 - never leave the SSE stream without a terminal event
         report = normalise_and_build_report(
@@ -905,6 +1110,7 @@ async def _produce_audit_events(
             streaming_url=final_streaming_url,
             result_json=None,
             error_message=f"Could not process agent output: {exc}",
+            test_account_ref=test_account_ref,
         )
     run_state["report"] = report
 

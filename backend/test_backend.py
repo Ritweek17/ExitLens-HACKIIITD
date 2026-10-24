@@ -10,6 +10,7 @@ import main
 from models import Evidence, FrictionSignal
 from orchestrator import (
     AUDIT_OUTPUT_SCHEMA,
+    build_audit_goal,
     build_tinyfish_stream_kwargs,
     detect_barrier,
     normalise_and_build_report,
@@ -139,7 +140,7 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertEqual(len(blocked_report.evidence), 1)
         self.assertEqual(blocked_report.evidence[0].id, "ev_block")
 
-        # Genuine API key / billing error -> outcome=failed, stop_reason=error
+        # Genuine API key / billing error with 0 steps -> outcome=failed, stop_reason=error
         failed_report = normalise_and_build_report(
             "run_err_infra",
             "Netflix India",
@@ -150,6 +151,23 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         )
         self.assertEqual(failed_report.outcome, "failed")
         self.assertEqual(failed_report.stop_reason, "error")
+        self.assertEqual(failed_report.evidence, [])
+
+        # Timeout or error after steps were observed -> outcome=partial_evidence, steps preserved in evidence
+        ts = datetime.now(timezone.utc)
+        partial_report = normalise_and_build_report(
+            "run_err_partial",
+            "YouTube Premium",
+            [(1, "Opened YouTube help page", ts), (2, "Clicked paid memberships link", ts)],
+            None,
+            None,
+            error_message="Audit exceeded the 180s time limit and was stopped.",
+        )
+        self.assertEqual(partial_report.outcome, "partial_evidence")
+        self.assertEqual(partial_report.stop_reason, "error")
+        self.assertEqual(len(partial_report.evidence), 2)
+        self.assertIn("Opened YouTube help page", partial_report.evidence[0].content or "")
+        self.assertIn("Partial evidence preserved from 2 observed step(s)", partial_report.limitations[1])
 
     def test_generic_errors_are_failed_not_barriers_but_real_barriers_still_block(self) -> None:
         generic = [
@@ -175,6 +193,13 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
                 report = normalise_and_build_report("run_b", "Svc", [], None, None, error_message=msg)
                 self.assertEqual(report.outcome, "human_required")
                 self.assertEqual(report.stop_reason, "blocked")
+
+    def test_build_audit_goal_enforces_navigation_discipline_and_action_budget(self) -> None:
+        goal = build_audit_goal("QuickCart Pro")
+        self.assertIn("MAX 15 ACTIONS", goal)
+        self.assertIn("STOP BEFORE clicking any final", goal)
+        self.assertIn("Do NOT loop back to help/support articles", goal)
+        self.assertIn("Do NOT waste actions changing country/region dropdowns", goal)
 
     def test_build_tinyfish_stream_kwargs_stealth_proxy_and_schema(self) -> None:
         import os
@@ -419,9 +444,11 @@ class SharedRunStreamTests(unittest.TestCase):
         self.assertEqual([e.type for e in evs], ["step", "error"])
         self.assertIsNone(evs[-1].stop_reason)
         self.assertIn("time limit", evs[-1].label)
-        self.assertEqual(state["report"].outcome, "failed")
+        self.assertEqual(state["report"].outcome, "partial_evidence")
         self.assertEqual(state["report"].stop_reason, "error")
         self.assertFalse(state["report"].safety_gate_stopped)
+        self.assertEqual(len(state["report"].evidence), 1)
+        self.assertIn("Opened account page", state["report"].evidence[0].content or "")
         self.assertIn("time limit", state["report"].limitations[0])
 
     def test_run_time_limit_env_parsing(self) -> None:
@@ -653,6 +680,143 @@ class ApiContractIntegrationTests(unittest.TestCase):
                     report["friction_score"],
                     sum(s["weight"] for s in report["friction_signals"]),
                 )
+
+    def test_test_accounts_registry_and_verification_gate(self) -> None:
+        accounts = self.client.get("/test-accounts").json()
+        self.assertGreaterEqual(len(accounts), 4)
+        ids = {a["id"] for a in accounts}
+        self.assertIn("tacct_streamflix_in", ids)
+
+        # Reject unregistered or personal account reference
+        r_bad = self.client.post(
+            "/runs",
+            json={
+                "service": "StreamFlix India",
+                "human_approved": True,
+                "test_account_confirmed": True,
+                "test_account_ref": "personal_account_123",
+            },
+        )
+        self.assertEqual(r_bad.status_code, 409)
+        self.assertEqual(r_bad.json()["error"]["code"], "account_verification_failed")
+
+        # Accept registered dedicated_test account reference and propagate to report
+        r_ok = self.client.post(
+            "/runs",
+            json={
+                "service": "StreamFlix India",
+                "human_approved": True,
+                "test_account_confirmed": True,
+                "test_account_ref": "tacct_streamflix_in",
+            },
+        )
+        self.assertEqual(r_ok.status_code, 201)
+        run_id = r_ok.json()["run_id"]
+        rep = self.client.get(f"/runs/{run_id}/report").json()
+        self.assertEqual(rep["test_account_ref"], "tacct_streamflix_in")
+        self.assertTrue(rep["account_verified"])
+
+    def test_runtime_account_mismatch_stops_with_account_verification_failed(self) -> None:
+        ts = datetime.now(timezone.utc)
+        rep = normalise_and_build_report(
+            "run_mismatch",
+            "StreamFlix India",
+            [(1, "Opened account page", ts)],
+            None,
+            {
+                "blocked": True,
+                "account_mismatch": True,
+                "block_reason": "Logged-in user is personal@gmail.com, not audit.streamflix@test.exitlens.in",
+                "stopped_at_button": None,
+                "cancellation_completed": False,
+                "findings": [],
+            },
+            test_account_ref="tacct_streamflix_in",
+        )
+        self.assertEqual(rep.stop_reason, "account_verification_failed")
+        self.assertEqual(rep.outcome, "unverified")
+        self.assertFalse(rep.account_verified)
+        self.assertFalse(rep.safety_gate_stopped)
+
+    def test_manual_stop_endpoint_sets_user_stopped(self) -> None:
+        created = self.client.post(
+            "/runs",
+            json={
+                "service": "StreamFlix India",
+                "human_approved": True,
+                "test_account_confirmed": True,
+            },
+        )
+        run_id = created.json()["run_id"]
+        stopped = self.client.post(f"/runs/{run_id}/stop", json={"reason": "user_stopped"})
+        self.assertEqual(stopped.status_code, 200)
+        self.assertEqual(stopped.json()["stop_reason"], "user_stopped")
+        rep = self.client.get(f"/runs/{run_id}/report").json()
+        self.assertEqual(rep["stop_reason"], "user_stopped")
+        self.assertTrue(rep["safety_gate_stopped"])
+
+    def test_v2_audits_multi_stage_human_gate_lifecycle(self) -> None:
+        # 1. Create audit -> pending_approval
+        created = self.client.post(
+            "/api/v1/audits",
+            json={
+                "service": {"name": "StreamFlix India", "startUrl": "https://example.in/account"},
+                "countryCode": "IN",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        audit = created.json()
+        audit_id = audit["id"]
+        self.assertEqual(audit["status"], "pending_approval")
+
+        # 2. Cannot start before approval
+        start_early = self.client.post(f"/api/v1/audits/{audit_id}/start")
+        self.assertEqual(start_early.status_code, 409)
+        self.assertEqual(start_early.json()["error"]["code"], "audit_not_approved")
+
+        # 3. Reject unregistered testAccountRef on approve
+        bad_approve = self.client.post(
+            f"/api/v1/audits/{audit_id}/approve",
+            json={
+                "serviceApproved": True,
+                "testAccountApproved": True,
+                "testAccountRef": "not_a_test_account",
+            },
+        )
+        self.assertEqual(bad_approve.status_code, 409)
+        self.assertEqual(bad_approve.json()["error"]["code"], "account_verification_failed")
+
+        # 4. Approve with registered dedicated_test account -> approved
+        approved = self.client.post(
+            f"/api/v1/audits/{audit_id}/approve",
+            json={
+                "serviceApproved": True,
+                "testAccountApproved": True,
+                "testAccountRef": "tacct_streamflix_in",
+            },
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["status"], "approved")
+        self.assertEqual(approved.json()["testAccount"]["reference"], "tacct_streamflix_in")
+        self.assertEqual(approved.json()["testAccount"]["kind"], "dedicated_test")
+
+        # 5. Explicitly start -> 202 Accepted
+        started = self.client.post(f"/api/v1/audits/{audit_id}/start")
+        self.assertEqual(started.status_code, 202)
+
+        # 6. Stream events and fetch final report
+        ev_res = self.client.get(f"/api/v1/audits/{audit_id}/events")
+        self.assertEqual(ev_res.status_code, 200)
+
+        rep_res = self.client.get(f"/api/v1/audits/{audit_id}/report")
+        self.assertEqual(rep_res.status_code, 200)
+        rep = rep_res.json()
+        self.assertEqual(rep["friction_score"], 65)
+        self.assertEqual(rep["test_account_ref"], "tacct_streamflix_in")
+
+        final_audit = self.client.get(f"/api/v1/audits/{audit_id}").json()
+        self.assertEqual(final_audit["status"], "report_ready")
+        self.assertEqual(final_audit["stepCount"], 7)
 
 
 if __name__ == "__main__":

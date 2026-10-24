@@ -42,9 +42,12 @@ Server: http://localhost:8000
 |---|---|
 | `GET /health` | Health check |
 | `GET /presets` | Curated Indian subscription presets (`StreamFlix India`, `GanaPlus Music`, `QuickCart Pro`, `CineVeil VIP`) |
-| `POST /runs` | Create a run (needs `human_approved` and `test_account_confirmed` set to `true`) |
+| `GET /test-accounts` | Server-managed dedicated test accounts (`tacct_...`) |
+| `POST /runs` | Create a run (needs `human_approved`, `test_account_confirmed`, and optional verified `test_account_ref`) |
 | `GET /runs/{run_id}/events` | SSE stream of steps (live TinyFish or deterministic demo fallback) |
+| `POST /runs/{run_id}/stop` | Stop an active or pending run (`user_stopped`) |
 | `GET /runs/{run_id}/report` | Evidence-gated friction report |
+| `/api/v1/audits/*` | v2 multi-stage human gate (`create` -> `approve` -> `start` -> `events` -> `stop` -> `report`) |
 | `/demo-site/` | StreamFlix India demo target (buried cancel, retention wall, confirm-shaming) |
 | `/demo-site/music.html` | GanaPlus Music demo target (FAQ redirect loop, mandatory survey, trick copy) |
 | `/demo-site/fair.html` | QuickCart Pro demo target (clean 2-step CCPA-compliant benchmark) |

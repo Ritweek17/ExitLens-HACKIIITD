@@ -12,6 +12,7 @@ PRESETS: list[ServicePreset] = [
         category="Video OTT",
         demo_path="/demo-site/",
         default_start_url="https://help.netflix.com/en/node/407",
+        default_test_account_ref="tacct_streamflix_in",
         description="7-step buried cancellation flow with 11px muted link, 50% retention wall, and guilt-shaming copy.",
         expected_outcome="completed_with_evidence",
     ),
@@ -21,6 +22,7 @@ PRESETS: list[ServicePreset] = [
         category="Audio Streaming",
         demo_path="/demo-site/music.html",
         default_start_url="https://support.spotify.com/in-en/article/cancel-premium/",
+        default_test_account_ref="tacct_ganaplus_in",
         description="6-step UPI AutoPay exit with FAQ redirect loop, mandatory exit survey, ₹19 flash offer, and trick copy.",
         expected_outcome="completed_with_evidence",
     ),
@@ -30,6 +32,7 @@ PRESETS: list[ServicePreset] = [
         category="Quick Commerce Membership",
         demo_path="/demo-site/fair.html",
         default_start_url="https://support.google.com/youtube/answer/6308278?hl=en-IN",
+        default_test_account_ref="tacct_quickcart_in",
         description="Clean 2-step CCPA-compliant cancellation benchmark with equal visual hierarchy and zero dark patterns.",
         expected_outcome="completed_with_evidence",
     ),
@@ -39,6 +42,7 @@ PRESETS: list[ServicePreset] = [
         category="Video OTT (Barrier Gate)",
         demo_path="/demo-site/blocked.html",
         default_start_url="https://www.netflix.com/youraccount",
+        default_test_account_ref="tacct_cineveil_in",
         description="Simulates a Cloudflare Error 1200 / CAPTCHA + SMS OTP wall demonstrating Box E barrier detection.",
         expected_outcome="human_required",
     ),
@@ -113,7 +117,12 @@ def mock_steps_for_run(service: str, start_url: str | None = None) -> list[str]:
     return MOCK_STEPS
 
 
-def mock_report(run_id: str, service: str, start_url: str | None = None) -> Report:
+def mock_report(
+    run_id: str,
+    service: str,
+    start_url: str | None = None,
+    test_account_ref: str | None = None,
+) -> Report:
     key = resolve_preset_key(service, start_url)
     ts = now()
 
@@ -125,6 +134,7 @@ def mock_report(run_id: str, service: str, start_url: str | None = None) -> Repo
             friction_score=0,
             safety_gate_stopped=False,
             stop_reason="blocked",
+            test_account_ref=test_account_ref,
             friction_signals=[],
             evidence=[
                 Evidence(
@@ -151,6 +161,7 @@ def mock_report(run_id: str, service: str, start_url: str | None = None) -> Repo
             friction_score=0,
             safety_gate_stopped=True,
             stop_reason="pre_cancellation_boundary",
+            test_account_ref=test_account_ref,
             friction_signals=[],
             evidence=[
                 Evidence(
@@ -299,6 +310,7 @@ def mock_report(run_id: str, service: str, start_url: str | None = None) -> Repo
             friction_score=total_score,
             safety_gate_stopped=True,
             stop_reason="pre_cancellation_boundary",
+            test_account_ref=test_account_ref,
             friction_signals=scored_signals,
             evidence=evidence,
             ccpa_alignment=ccpa,
@@ -408,6 +420,7 @@ def mock_report(run_id: str, service: str, start_url: str | None = None) -> Repo
         friction_score=total_score,
         safety_gate_stopped=True,
         stop_reason="pre_cancellation_boundary",
+        test_account_ref=test_account_ref,
         friction_signals=scored_signals,
         evidence=evidence,
         ccpa_alignment=ccpa,
