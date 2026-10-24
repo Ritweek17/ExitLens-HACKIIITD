@@ -64,6 +64,8 @@ curl localhost:8000/runs/$RUN/report
 
 CORS allows `http://localhost:5173` and `http://localhost:3000` by default. Override with a comma-separated `ALLOWED_ORIGINS` in `.env`.
 
+Each run executes once, no matter how many times `/runs/{run_id}/events` is opened: extra or reconnecting subscribers replay the buffered events and follow the live run. A live TinyFish run is stopped after `TINYFISH_RUN_TIMEOUT_SECONDS` (default 300) and reported as `failed` / `error`.
+
 ## TinyFish smoke test
 
 ```bash

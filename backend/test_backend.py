@@ -331,6 +331,87 @@ class SharedRunStreamTests(unittest.TestCase):
         self.assertEqual(second, first)
         self.assertEqual(late, first)
 
+    def test_live_run_time_limit_stops_hung_agent_and_reports_failed(self) -> None:
+        import asyncio
+        import os
+        import sys
+        import time
+        import types
+        from unittest import mock
+
+        import orchestrator
+
+        class ProgressEvent:
+            def __init__(self, purpose: str) -> None:
+                self.purpose = purpose
+
+        class StreamingUrlEvent:
+            streaming_url = None
+
+        class CompleteEvent:
+            error = None
+            result_json = None
+
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                yield ProgressEvent("Opened account page")
+                time.sleep(1.0)  # simulates a hung agent
+
+        class TinyFish:
+            def __init__(self, api_key=None) -> None:
+                self.agent = types.SimpleNamespace(stream=lambda **kw: _Stream())
+
+        fake = types.ModuleType("tinyfish")
+        fake.ProgressEvent, fake.StreamingUrlEvent, fake.CompleteEvent = (
+            ProgressEvent,
+            StreamingUrlEvent,
+            CompleteEvent,
+        )
+        fake.TinyFish = TinyFish
+
+        async def scenario():
+            state = {
+                "service": "Netflix India",
+                "start_url": "https://www.netflix.com/youraccount",
+                "events": None,
+                "report": None,
+            }
+            evs = [ev async for ev in orchestrator.stream_audit_run("run_t", state, 0)]
+            return evs, state
+
+        env = {"TINYFISH_API_KEY": "test-key", "TINYFISH_RUN_TIMEOUT_SECONDS": "0.3"}
+        with mock.patch.dict(sys.modules, {"tinyfish": fake}), mock.patch.dict(
+            os.environ, env
+        ), mock.patch.object(orchestrator, "build_tinyfish_stream_kwargs", lambda *a, **k: {}):
+            evs, state = asyncio.run(scenario())
+
+        self.assertEqual([e.type for e in evs], ["step", "error", "report_ready"])
+        self.assertEqual(state["report"].outcome, "failed")
+        self.assertEqual(state["report"].stop_reason, "error")
+        self.assertFalse(state["report"].safety_gate_stopped)
+        self.assertIn("time limit", state["report"].limitations[0])
+
+    def test_run_time_limit_env_parsing(self) -> None:
+        import os
+        from unittest import mock
+
+        from orchestrator import DEFAULT_RUN_TIME_LIMIT_SECONDS, get_run_time_limit_seconds
+
+        for raw, expected in [
+            ("", DEFAULT_RUN_TIME_LIMIT_SECONDS),
+            ("abc", DEFAULT_RUN_TIME_LIMIT_SECONDS),
+            ("-5", DEFAULT_RUN_TIME_LIMIT_SECONDS),
+            ("45", 45.0),
+        ]:
+            with mock.patch.dict(os.environ, {"TINYFISH_RUN_TIMEOUT_SECONDS": raw}):
+                self.assertEqual(get_run_time_limit_seconds(), expected)
+
     def test_driver_failure_ends_stream_with_error_and_failed_report(self) -> None:
         import asyncio
         from unittest import mock

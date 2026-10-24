@@ -238,6 +238,19 @@ def resolve_effective_start_url(service: str, start_url: str | None) -> str | No
     return start_url
 
 
+DEFAULT_RUN_TIME_LIMIT_SECONDS = 300.0
+
+
+def get_run_time_limit_seconds() -> float:
+    """Overall wall-clock limit for one live TinyFish run (env `TINYFISH_RUN_TIMEOUT_SECONDS`)."""
+    raw = (os.getenv("TINYFISH_RUN_TIMEOUT_SECONDS") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_RUN_TIME_LIMIT_SECONDS
+    return value if value > 0 else DEFAULT_RUN_TIME_LIMIT_SECONDS
+
+
 def should_use_live_tinyfish(start_url: str | None, service: str = "") -> bool:
     """Return True only when a real external target URL (or PUBLIC_DEMO_BASE_URL) and TINYFISH_API_KEY are present."""
     effective_url = resolve_effective_start_url(service, start_url)
@@ -823,36 +836,51 @@ async def _produce_audit_events(
 
     worker_future = loop.run_in_executor(None, worker)
 
+    time_limit = get_run_time_limit_seconds()
+    deadline = loop.time() + time_limit
+    timed_out = False
     while True:
-        item = await queue.get()
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=max(0.0, deadline - loop.time()))
+        except asyncio.TimeoutError:
+            timed_out = True
+            break
         if item is None:
             break
         recorded_events.append(item)
         yield item
 
-    await worker_future
+    if timed_out:
+        # The SDK worker thread cannot be cancelled; stop waiting for it and report from a snapshot.
+        final_error: str | None = f"Audit exceeded the {time_limit:g}s time limit and was stopped."
+    else:
+        await worker_future
+        final_error = error_message
+    final_steps = list(observed_steps)
+    final_result = None if timed_out else result_json
+    final_streaming_url = streaming_url
 
     try:
         report = normalise_and_build_report(
             run_id=run_id,
             service=service,
-            steps=observed_steps,
-            streaming_url=streaming_url,
-            result_json=result_json,
-            error_message=error_message,
+            steps=final_steps,
+            streaming_url=final_streaming_url,
+            result_json=final_result,
+            error_message=final_error,
         )
     except Exception as exc:  # noqa: BLE001 - never leave the SSE stream without a terminal event
         report = normalise_and_build_report(
             run_id=run_id,
             service=service,
-            steps=observed_steps,
-            streaming_url=streaming_url,
+            steps=final_steps,
+            streaming_url=final_streaming_url,
             result_json=None,
             error_message=f"Could not process agent output: {exc}",
         )
     run_state["report"] = report
 
-    last_step = len(observed_steps)
+    last_step = len(final_steps)
     stopped_ev = RunEvent(
         type="stopped" if report.stop_reason != "error" else "error",
         step=last_step,
