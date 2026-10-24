@@ -151,6 +151,31 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertEqual(failed_report.outcome, "failed")
         self.assertEqual(failed_report.stop_reason, "error")
 
+    def test_generic_errors_are_failed_not_barriers_but_real_barriers_still_block(self) -> None:
+        generic = [
+            "[TIMEOUT] Request timeout after 60s",
+            "[AGENT_FAILURE] Navigation failed: net::ERR_CONNECTION_RESET",
+            "Unexpected error in robot controller (security module reloaded)",
+            "Upstream returned status 401 or 403 for internal endpoint",
+        ]
+        for msg in generic:
+            with self.subTest(msg=msg):
+                report = normalise_and_build_report("run_g", "Svc", [], None, None, error_message=msg)
+                self.assertEqual(report.outcome, "failed")
+                self.assertEqual(report.stop_reason, "error")
+
+        barriers = [
+            "Target URL or login-gated page was blocked by automated browser policy.",
+            "net::ERR_HTTP2_PROTOCOL_ERROR while loading page",
+            "Cloudflare Error 1200: Verify you are human",
+            "Login required to view subscription",
+        ]
+        for msg in barriers:
+            with self.subTest(msg=msg):
+                report = normalise_and_build_report("run_b", "Svc", [], None, None, error_message=msg)
+                self.assertEqual(report.outcome, "human_required")
+                self.assertEqual(report.stop_reason, "blocked")
+
     def test_build_tinyfish_stream_kwargs_stealth_proxy_and_schema(self) -> None:
         import os
 
@@ -223,6 +248,32 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
         self.assertEqual(report.friction_signals[0].step_refs, [1, 2, 3, 4, 5, 6])
         self.assertEqual(report.ccpa_alignment[0].pattern, "subscription_trap")
 
+    def test_normaliser_tolerates_malformed_agent_numbers(self) -> None:
+        ts = datetime.now(timezone.utc)
+        steps = [(1, "Click Settings", ts), (2, "Click Cancel", ts)]
+        result_json = {
+            "blocked": False,
+            "block_reason": None,
+            "stopped_at_button": "Confirm cancellation",
+            "cancellation_completed": False,
+            "findings": [
+                {
+                    "indicator": "hidden_cancel",
+                    "title": "Tiny link",
+                    "description": "11px grey link",
+                    "step_number": "two",
+                    "step_refs": ["1", "bad", True, None, 99],
+                    "evidence_quote": "I still want to cancel",
+                    "ccpa_pattern": "interface_interference",
+                }
+            ],
+        }
+        report = normalise_and_build_report("run_bad", "Svc", steps, None, result_json)
+        self.assertEqual(report.friction_score, 20)
+        # step_number "two" falls back to the last step; refs are parsed, clamped and deduplicated
+        self.assertEqual(report.friction_signals[0].step_refs, [1, 2])
+        self.assertEqual(report.evidence[0].step, 2)
+
     def test_normaliser_handles_clean_two_step_fair_flow(self) -> None:
         ts = datetime.now(timezone.utc)
         steps = [
@@ -271,6 +322,211 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
                 os.environ.pop("PUBLIC_DEMO_BASE_URL", None)
 
 
+class SharedRunStreamTests(unittest.TestCase):
+    def test_concurrent_and_late_subscribers_share_one_audit_execution(self) -> None:
+        import asyncio
+        from unittest import mock
+
+        import orchestrator
+        from mock_data import mock_step_event
+
+        calls = 0
+
+        async def fake_produce(run_id, run_state, mock_delay_seconds=0.0):
+            nonlocal calls
+            calls += 1
+            for i in range(1, 4):
+                yield mock_step_event(i, f"step {i}")
+                await asyncio.sleep(0.01)
+
+        async def collect(run_state):
+            return [ev.label async for ev in orchestrator.stream_audit_run("run_x", run_state, 0)]
+
+        async def scenario():
+            state = {"service": "Svc", "start_url": None, "events": None, "report": None}
+            first, second = await asyncio.gather(collect(state), collect(state))
+            late = await collect(state)
+            return first, second, late
+
+        with mock.patch.object(orchestrator, "_produce_audit_events", fake_produce):
+            first, second, late = asyncio.run(scenario())
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(first, ["step 1", "step 2", "step 3"])
+        self.assertEqual(second, first)
+        self.assertEqual(late, first)
+
+    def test_live_run_time_limit_stops_hung_agent_and_reports_failed(self) -> None:
+        import asyncio
+        import os
+        import sys
+        import time
+        import types
+        from unittest import mock
+
+        import orchestrator
+
+        class ProgressEvent:
+            def __init__(self, purpose: str) -> None:
+                self.purpose = purpose
+
+        class StreamingUrlEvent:
+            streaming_url = None
+
+        class CompleteEvent:
+            error = None
+            result_json = None
+
+        class _Stream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                yield ProgressEvent("Opened account page")
+                time.sleep(1.0)  # simulates a hung agent
+
+        class TinyFish:
+            def __init__(self, api_key=None) -> None:
+                self.agent = types.SimpleNamespace(stream=lambda **kw: _Stream())
+
+        fake = types.ModuleType("tinyfish")
+        fake.ProgressEvent, fake.StreamingUrlEvent, fake.CompleteEvent = (
+            ProgressEvent,
+            StreamingUrlEvent,
+            CompleteEvent,
+        )
+        fake.TinyFish = TinyFish
+
+        async def scenario():
+            state = {
+                "service": "Netflix India",
+                "start_url": "https://www.netflix.com/youraccount",
+                "events": None,
+                "report": None,
+            }
+            evs = [ev async for ev in orchestrator.stream_audit_run("run_t", state, 0)]
+            return evs, state
+
+        env = {"TINYFISH_API_KEY": "test-key", "TINYFISH_RUN_TIMEOUT_SECONDS": "0.3"}
+        with mock.patch.dict(sys.modules, {"tinyfish": fake}), mock.patch.dict(
+            os.environ, env
+        ), mock.patch.object(orchestrator, "build_tinyfish_stream_kwargs", lambda *a, **k: {}):
+            evs, state = asyncio.run(scenario())
+
+        self.assertEqual([e.type for e in evs], ["step", "error"])
+        self.assertIsNone(evs[-1].stop_reason)
+        self.assertIn("time limit", evs[-1].label)
+        self.assertEqual(state["report"].outcome, "failed")
+        self.assertEqual(state["report"].stop_reason, "error")
+        self.assertFalse(state["report"].safety_gate_stopped)
+        self.assertIn("time limit", state["report"].limitations[0])
+
+    def test_run_time_limit_env_parsing(self) -> None:
+        import os
+        from unittest import mock
+
+        from orchestrator import DEFAULT_RUN_TIME_LIMIT_SECONDS, get_run_time_limit_seconds
+
+        for raw, expected in [
+            ("", DEFAULT_RUN_TIME_LIMIT_SECONDS),
+            ("abc", DEFAULT_RUN_TIME_LIMIT_SECONDS),
+            ("-5", DEFAULT_RUN_TIME_LIMIT_SECONDS),
+            ("45", 45.0),
+        ]:
+            with mock.patch.dict(os.environ, {"TINYFISH_RUN_TIMEOUT_SECONDS": raw}):
+                self.assertEqual(get_run_time_limit_seconds(), expected)
+
+    def test_driver_failure_ends_stream_with_error_and_failed_report(self) -> None:
+        import asyncio
+        from unittest import mock
+
+        import orchestrator
+
+        async def exploding_produce(run_id, run_state, mock_delay_seconds=0.0):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover - makes this an async generator
+
+        async def scenario():
+            state = {"service": "Svc", "start_url": None, "events": None, "report": None}
+            evs = [ev async for ev in orchestrator.stream_audit_run("run_y", state, 0)]
+            return evs, state
+
+        with mock.patch.object(orchestrator, "_produce_audit_events", exploding_produce):
+            evs, state = asyncio.run(scenario())
+
+        self.assertEqual(evs[-1].type, "error")
+        self.assertEqual(state["report"].outcome, "failed")
+
+
+class RunStorePruningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._saved = dict(main.RUNS)
+        main.RUNS.clear()
+
+    def tearDown(self) -> None:
+        main.RUNS.clear()
+        main.RUNS.update(self._saved)
+
+    @staticmethod
+    def _run(created: float, active: bool = False, done: bool = False) -> dict:
+        run: dict = {"service": "S", "created_mono": created}
+        if active:
+            run["task"] = object()
+        if done:
+            run["done"] = True
+        return run
+
+    def test_ttl_expires_inactive_runs_but_never_active_ones(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(main, "RUN_TTL_SECONDS", 100), mock.patch.object(main, "MAX_RUNS", 50):
+            main.RUNS.update(
+                {
+                    "old_idle": self._run(0),
+                    "old_done": self._run(0, active=True, done=True),
+                    "old_active": self._run(0, active=True),
+                    "fresh": self._run(950),
+                }
+            )
+            main.prune_runs(now_mono=1000)
+        self.assertEqual(set(main.RUNS), {"old_active", "fresh"})
+
+    def test_cap_evicts_oldest_inactive_runs_first(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(main, "RUN_TTL_SECONDS", 10_000), mock.patch.object(main, "MAX_RUNS", 3):
+            main.RUNS.update(
+                {
+                    "a_active": self._run(1, active=True),
+                    "b": self._run(2),
+                    "c": self._run(3),
+                    "d": self._run(4),
+                    "e": self._run(5),
+                }
+            )
+            main.prune_runs(now_mono=10)
+        self.assertEqual(list(main.RUNS), ["a_active", "d", "e"])
+
+    def test_create_run_prunes_and_new_run_is_retrievable(self) -> None:
+        from unittest import mock
+
+        client = TestClient(main.app)
+        with mock.patch.object(main, "MAX_RUNS", 2):
+            ids = [
+                client.post(
+                    "/runs",
+                    json={"service": "S", "human_approved": True, "test_account_confirmed": True},
+                ).json()["run_id"]
+                for _ in range(4)
+            ]
+        self.assertLessEqual(len(main.RUNS), 3)
+        self.assertIn(ids[-1], main.RUNS)
+        self.assertEqual(client.get(f"/runs/{ids[0]}/report").status_code, 404)
+
+
 class ApiContractIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         main.MOCK_STEP_DELAY_SECONDS = 0.0
@@ -283,6 +539,55 @@ class ApiContractIntegrationTests(unittest.TestCase):
         for p in presets:
             res = self.client.get(p["demo_path"])
             self.assertEqual(res.status_code, 200)
+
+    def test_allowed_audit_hosts_guard(self) -> None:
+        import os
+        from unittest import mock
+
+        from orchestrator import is_start_url_allowed
+
+        # No allowlist configured: unrestricted (human approval flags still apply).
+        with mock.patch.dict(os.environ, {"ALLOWED_AUDIT_HOSTS": "", "PUBLIC_DEMO_BASE_URL": ""}):
+            self.assertTrue(is_start_url_allowed("https://anything.example.org/x"))
+
+        env = {"ALLOWED_AUDIT_HOSTS": " Hotstar.com, *.sonyliv.com ", "PUBLIC_DEMO_BASE_URL": ""}
+        with mock.patch.dict(os.environ, env):
+            self.assertTrue(is_start_url_allowed(None))
+            self.assertTrue(is_start_url_allowed("https://www.hotstar.com/in/account"))  # subdomain
+            self.assertTrue(is_start_url_allowed("https://sonyliv.com/subscription"))
+            self.assertTrue(is_start_url_allowed("https://help.netflix.com/en/node/407"))  # preset host
+            self.assertTrue(is_start_url_allowed("https://abc123.lhr.life/demo-site/"))  # tunnel
+            self.assertTrue(is_start_url_allowed("https://example.in/account"))  # demo fallback host
+            self.assertFalse(is_start_url_allowed("https://evil-hotstar.com/"))  # no suffix confusion
+            self.assertFalse(is_start_url_allowed("https://nothotstar.com/"))
+            self.assertFalse(is_start_url_allowed("https://random-site.org/cancel"))
+
+        with mock.patch.dict(
+            os.environ,
+            {"ALLOWED_AUDIT_HOSTS": "hotstar.com", "PUBLIC_DEMO_BASE_URL": "https://myhost.example.net"},
+        ):
+            self.assertTrue(is_start_url_allowed("https://myhost.example.net/demo-site/"))
+
+    def test_post_runs_rejects_disallowed_host_when_allowlist_set(self) -> None:
+        import os
+        from unittest import mock
+
+        client = TestClient(main.app)
+        body = {
+            "service": "Random",
+            "start_url": "https://random-site.org/cancel",
+            "human_approved": True,
+            "test_account_confirmed": True,
+        }
+        with mock.patch.dict(os.environ, {"ALLOWED_AUDIT_HOSTS": "hotstar.com"}):
+            res = client.post("/runs", json=body)
+            self.assertEqual(res.status_code, 422)
+            self.assertEqual(res.json()["error"]["code"], "host_not_allowed")
+            body["start_url"] = "https://www.hotstar.com/account"
+            self.assertEqual(client.post("/runs", json=body).status_code, 201)
+        with mock.patch.dict(os.environ, {"ALLOWED_AUDIT_HOSTS": ""}):
+            body["start_url"] = "https://random-site.org/cancel"
+            self.assertEqual(client.post("/runs", json=body).status_code, 201)
 
     def test_post_runs_approval_and_https_gates(self) -> None:
         r_unapproved = self.client.post(

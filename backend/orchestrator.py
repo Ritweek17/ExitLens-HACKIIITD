@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
 from mock_data import (
+    PRESETS,
     mock_report,
     mock_step_event,
     mock_steps_for_run,
@@ -73,31 +74,26 @@ BLOCK_KEYWORDS = (
     "sign in to continue",
 )
 
+# Phrases in TinyFish error text that indicate a genuine anti-bot / auth barrier. Deliberately
+# specific: generic words ("bot", "login", "timeout", bare status codes) also appear in ordinary
+# failures and must not turn a plain error into a `human_required` barrier report.
 ERROR_BARRIER_KEYWORDS = (
     "error 1200",
     "cloudflare",
     "captcha",
     "verify you are human",
     "access denied",
-    "bot",
+    "err_access_denied",
+    "err_http2_protocol_error",
     "attention required",
-    "login",
-    "sign in",
+    "bot detection",
+    "blocked by automated browser",
+    "login required",
+    "login-gated",
+    "sign in to continue",
     "authentication required",
     "unauthorized",
     "forbidden",
-    "403",
-    "401",
-    "blocked",
-    "security",
-    "challenge",
-    "agent_failure",
-    "err_http2_protocol_error",
-    "err_access_denied",
-    "navigation failed",
-    "timeout",
-    "can't be processed",
-    "cannot be processed",
 )
 
 INFRA_ERROR_KEYWORDS = (
@@ -236,6 +232,52 @@ def resolve_effective_start_url(service: str, start_url: str | None) -> str | No
         demo_path = resolve_preset_demo_path(service, start_url)
         return f"{public_base}{demo_path}"
     return start_url
+
+
+DEFAULT_RUN_TIME_LIMIT_SECONDS = 300.0
+
+
+def get_run_time_limit_seconds() -> float:
+    """Overall wall-clock limit for one live TinyFish run (env `TINYFISH_RUN_TIMEOUT_SECONDS`)."""
+    raw = (os.getenv("TINYFISH_RUN_TIMEOUT_SECONDS") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_RUN_TIME_LIMIT_SECONDS
+    return value if value > 0 else DEFAULT_RUN_TIME_LIMIT_SECONDS
+
+
+def get_allowed_audit_hosts() -> set[str]:
+    """Hosts from the optional `ALLOWED_AUDIT_HOSTS` env var (comma-separated). Empty = no restriction."""
+    raw = os.getenv("ALLOWED_AUDIT_HOSTS") or ""
+    return {h.strip().lower().lstrip("*.").lstrip(".") for h in raw.split(",") if h.strip()}
+
+
+def is_start_url_allowed(start_url: str | None) -> bool:
+    """Server-side guard for live audit targets.
+
+    With no allowlist configured every URL is allowed (the human approval flags still apply).
+    When `ALLOWED_AUDIT_HOSTS` is set, only these hosts (and their subdomains) may be audited:
+    the configured hosts, the curated preset hosts, local/demo fallback hosts, tunnel hosts and
+    the host of `PUBLIC_DEMO_BASE_URL`.
+    """
+    allowed = get_allowed_audit_hosts()
+    if not allowed or not start_url:
+        return True
+    host = (urlparse(start_url).hostname or "").lower()
+    if not host:
+        return False
+    allowed |= DEMO_FALLBACK_HOSTS
+    for preset in PRESETS:
+        if preset.default_start_url:
+            allowed.add((urlparse(str(preset.default_start_url)).hostname or "").lower())
+    public_host = (urlparse(os.getenv("PUBLIC_DEMO_BASE_URL") or "").hostname or "").lower()
+    if public_host:
+        allowed.add(public_host)
+    if is_tunnel_demo_url(start_url):
+        return True
+    allowed.discard("")
+    return any(host == a or host.endswith("." + a) for a in allowed)
 
 
 def should_use_live_tinyfish(start_url: str | None, service: str = "") -> bool:
@@ -387,6 +429,17 @@ def detect_barrier(
     return None
 
 
+def _safe_int(value: Any, default: int | None) -> int | None:
+    """Parse agent-provided numbers defensively; bools and non-numeric values yield `default`."""
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _is_meta_step(label: str) -> bool:
     lowered = label.strip().lower()
     return any(lowered.startswith(prefix) for prefix in META_STEP_PREFIXES)
@@ -481,15 +534,15 @@ def normalise_and_build_report(
         # Do not allow a false-positive extra_steps signal when UI steps are within the 2-step baseline
         if indicator == "extra_steps" and steps and effective_total_steps <= 2:
             continue
-        raw_step_num = int(item.get("step_number") or max_step_idx)
+        raw_step_num = _safe_int(item.get("step_number"), max_step_idx)
         step_num = min(max(1, raw_step_num), max_step_idx)
 
         raw_refs = item.get("step_refs")
-        if isinstance(raw_refs, list) and raw_refs:
-            step_refs = sorted(
-                {min(max(1, int(r)), max_step_idx) for r in raw_refs if isinstance(r, (int, float))}
-            )
-        else:
+        step_refs = []
+        if isinstance(raw_refs, list):
+            parsed_refs = (_safe_int(r, None) for r in raw_refs)
+            step_refs = sorted({min(max(1, r), max_step_idx) for r in parsed_refs if r is not None})
+        if not step_refs:
             step_refs = [step_num]
 
         if indicator == "extra_steps" and len(step_refs) <= 1 and len(ui_step_indices) > 1:
@@ -651,13 +704,79 @@ async def stream_audit_run(
     run_state: dict[str, Any],
     mock_delay_seconds: float = 0.6,
 ) -> AsyncIterator[RunEvent]:
-    """Stream SSE RunEvents for a run (real TinyFish if start_url + API key present, else mock fallback)."""
-    # If already finished, replay cached events so page refreshes never re-trigger TinyFish
-    if run_state.get("events"):
-        for ev in run_state["events"]:
+    """Stream SSE RunEvents for a run, executing the audit at most once per run.
+
+    The audit runs in a background task that appends events to a shared buffer. Every
+    subscriber (first connection, reconnect, duplicate EventSource, page refresh) reads that
+    buffer, so a client disconnecting never cancels the run and never triggers a second one.
+    """
+    buffer: list[RunEvent] = run_state.setdefault("buffer", [])
+
+    # Finished run: replay the buffer without touching any event-loop primitives.
+    if run_state.get("done"):
+        for ev in buffer:
             yield ev
         return
 
+    if "task" not in run_state:
+        run_state["cond"] = asyncio.Condition()
+        run_state["task"] = asyncio.create_task(_drive_audit(run_id, run_state, mock_delay_seconds))
+
+    cond: asyncio.Condition = run_state["cond"]
+    index = 0
+    while True:
+        async with cond:
+            await cond.wait_for(lambda: index < len(buffer) or run_state.get("done", False))
+        while index < len(buffer):
+            yield buffer[index]
+            index += 1
+        if run_state.get("done", False):
+            return
+
+
+async def _drive_audit(
+    run_id: str,
+    run_state: dict[str, Any],
+    mock_delay_seconds: float,
+) -> None:
+    """Background driver: pump `_produce_audit_events` into the shared buffer exactly once."""
+    buffer: list[RunEvent] = run_state["buffer"]
+    cond: asyncio.Condition = run_state["cond"]
+    try:
+        async for ev in _produce_audit_events(run_id, run_state, mock_delay_seconds):
+            buffer.append(ev)
+            async with cond:
+                cond.notify_all()
+    except Exception as exc:  # noqa: BLE001 - always end the stream with a terminal event
+        if run_state.get("report") is None:
+            run_state["report"] = normalise_and_build_report(
+                run_id=run_id,
+                service=run_state["service"],
+                steps=[],
+                streaming_url=None,
+                result_json=None,
+                error_message=f"Audit failed unexpectedly: {exc}",
+            )
+        buffer.append(
+            RunEvent(
+                type="error",
+                step=len([e for e in buffer if e.type == "step"]),
+                label=f"Audit failed: {exc}",
+                timestamp=now(),
+            )
+        )
+    finally:
+        run_state["done"] = True
+        async with cond:
+            cond.notify_all()
+
+
+async def _produce_audit_events(
+    run_id: str,
+    run_state: dict[str, Any],
+    mock_delay_seconds: float = 0.6,
+) -> AsyncIterator[RunEvent]:
+    """Generate RunEvents (real TinyFish if start_url + API key present, else mock fallback)."""
     raw_start_url: str | None = run_state.get("start_url")
     service: str = run_state["service"]
     start_url: str | None = resolve_effective_start_url(service, raw_start_url)
@@ -745,28 +864,68 @@ async def stream_audit_run(
 
     worker_future = loop.run_in_executor(None, worker)
 
+    time_limit = get_run_time_limit_seconds()
+    deadline = loop.time() + time_limit
+    timed_out = False
     while True:
-        item = await queue.get()
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=max(0.0, deadline - loop.time()))
+        except asyncio.TimeoutError:
+            timed_out = True
+            break
         if item is None:
             break
         recorded_events.append(item)
         yield item
 
-    await worker_future
+    if timed_out:
+        # The SDK worker thread cannot be cancelled; stop waiting for it and report from a snapshot.
+        final_error: str | None = f"Audit exceeded the {time_limit:g}s time limit and was stopped."
+    else:
+        await worker_future
+        final_error = error_message
+    final_steps = list(observed_steps)
+    final_result = None if timed_out else result_json
+    final_streaming_url = streaming_url
 
-    report = normalise_and_build_report(
-        run_id=run_id,
-        service=service,
-        steps=observed_steps,
-        streaming_url=streaming_url,
-        result_json=result_json,
-        error_message=error_message,
-    )
+    try:
+        report = normalise_and_build_report(
+            run_id=run_id,
+            service=service,
+            steps=final_steps,
+            streaming_url=final_streaming_url,
+            result_json=final_result,
+            error_message=final_error,
+        )
+    except Exception as exc:  # noqa: BLE001 - never leave the SSE stream without a terminal event
+        report = normalise_and_build_report(
+            run_id=run_id,
+            service=service,
+            steps=final_steps,
+            streaming_url=final_streaming_url,
+            result_json=None,
+            error_message=f"Could not process agent output: {exc}",
+        )
     run_state["report"] = report
 
-    last_step = len(observed_steps)
+    last_step = len(final_steps)
+    if report.stop_reason == "error":
+        # Contract: on failure a single terminal `error` event is sent instead of
+        # `stopped` + `report_ready`; the failed report stays fetchable via GET /report.
+        error_ev = RunEvent(
+            type="error",
+            step=last_step,
+            label=report.limitations[0] if report.limitations else "Audit failed",
+            timestamp=now(),
+            streaming_url=final_streaming_url,
+        )
+        recorded_events.append(error_ev)
+        run_state["events"] = recorded_events
+        yield error_ev
+        return
+
     stopped_ev = RunEvent(
-        type="stopped" if report.stop_reason != "error" else "error",
+        type="stopped",
         step=last_step,
         label=(
             "Stopped before the final cancellation action"

@@ -65,7 +65,7 @@ Responses:
 
 - `201 Created` -> `{"run_id": "run_ab12cd34"}`
 - `409 Conflict` -> `{"error": {"code": "approval_required", "message": "..."}}` when either approval flag is not `true`.
-- `422 Unprocessable Entity` -> missing or invalid fields (FastAPI's default validation body), or `{"error": {"code": "invalid_start_url", ...}}` for a non-HTTPS `start_url`.
+- `422 Unprocessable Entity` -> missing or invalid fields (FastAPI's default validation body), `{"error": {"code": "invalid_start_url", ...}}` for a non-HTTPS `start_url`, or `{"error": {"code": "host_not_allowed", ...}}` when the server operator restricts audit targets with `ALLOWED_AUDIT_HOSTS` and the `start_url` host is not allowed (presets and the demo tunnel are always allowed; with no allowlist set, any HTTPS host is accepted).
 
 ### `GET /runs/{run_id}/events`
 
@@ -93,7 +93,7 @@ Server-Sent Events stream (`text/event-stream`). Every message uses only `data:`
 | `streaming_url` | string \| null | TinyFish live browser view, when available. |
 | `stop_reason` | `"pre_cancellation_boundary"` \| `"blocked"` \| `"user_stopped"` \| `"error"` \| null | Set only on `stopped` events. |
 
-Event order: one or more `step` -> `stopped` -> `report_ready`. On failure an `error` event is sent instead. **After `report_ready` or `error`, the server closes the stream; the client should call `eventSource.close()`** (otherwise `EventSource` reconnects automatically).
+Event order: one or more `step` -> `stopped` -> `report_ready`. On failure a single terminal `error` event is sent instead of `stopped` + `report_ready` (its `label` explains the failure and `stop_reason` stays `null`); the `failed` report is still available from `GET /runs/{run_id}/report`. **After `report_ready` or `error`, the server closes the stream; the client should call `eventSource.close()`** (otherwise `EventSource` reconnects automatically).
 
 `404 Not Found` (`run_not_found`) for an unknown `run_id`.
 
@@ -210,7 +210,7 @@ Each friction signal belongs to one of 6 indicator categories (`backend/scoring.
 { "error": { "code": "approval_required", "message": "Human approval and a dedicated test account are required." } }
 ```
 
-Codes in v1: `approval_required` (409), `invalid_start_url` (422), `run_not_found` (404), `report_not_ready` (409, once real runs are wired in). FastAPI request-validation errors (422) keep FastAPI's default `{"detail": [...]}` body.
+Codes in v1: `approval_required` (409), `invalid_start_url` (422), `host_not_allowed` (422), `run_not_found` (404), `report_not_ready` (409, once real runs are wired in). FastAPI request-validation errors (422) keep FastAPI's default `{"detail": [...]}` body.
 
 ---
 
