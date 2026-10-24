@@ -6,11 +6,13 @@ v1 endpoints return MOCK data (see mock_data.py). Contract: docs/api-contract.md
 import asyncio
 import os
 import uuid
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from mock_data import MOCK_STEPS, mock_report, mock_step_event, now
 from models import ErrorResponse, Report, RunCreate, RunCreated, RunEvent
@@ -60,6 +62,15 @@ def get_run(run_id: str) -> dict:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# Mock dark-pattern subscription site used as a safe, reliable audit target.
+# TinyFish runs in the cloud, so expose this publicly (e.g. ngrok) for live runs.
+app.mount(
+    "/demo-site",
+    StaticFiles(directory=Path(__file__).parent / "demo_site", html=True),
+    name="demo-site",
+)
 
 
 @app.post(
