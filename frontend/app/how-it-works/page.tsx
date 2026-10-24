@@ -3,15 +3,8 @@ import Link from "next/link";
 import {
   ShieldCheck,
   ArrowRight,
-  Layers,
-  Search,
   CheckCircle2,
-  AlertTriangle,
-  Lock,
-  FileText,
   Scale,
-  Eye,
-  HelpCircle,
   Info,
 } from "lucide-react";
 
