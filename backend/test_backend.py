@@ -10,6 +10,7 @@ import main
 from models import Evidence, FrictionSignal
 from orchestrator import (
     AUDIT_OUTPUT_SCHEMA,
+    build_audit_goal,
     build_tinyfish_stream_kwargs,
     detect_barrier,
     normalise_and_build_report,
@@ -175,6 +176,13 @@ class OrchestratorAndBarrierTests(unittest.TestCase):
                 report = normalise_and_build_report("run_b", "Svc", [], None, None, error_message=msg)
                 self.assertEqual(report.outcome, "human_required")
                 self.assertEqual(report.stop_reason, "blocked")
+
+    def test_build_audit_goal_enforces_navigation_discipline_and_action_budget(self) -> None:
+        goal = build_audit_goal("QuickCart Pro")
+        self.assertIn("MAX 15 ACTIONS", goal)
+        self.assertIn("STOP BEFORE clicking any final", goal)
+        self.assertIn("Do NOT loop back to help/support articles", goal)
+        self.assertIn("Do NOT waste actions changing country/region dropdowns", goal)
 
     def test_build_tinyfish_stream_kwargs_stealth_proxy_and_schema(self) -> None:
         import os
