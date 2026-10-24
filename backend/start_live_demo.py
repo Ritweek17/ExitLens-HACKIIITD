@@ -13,6 +13,7 @@ Usage:
 import argparse
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -75,9 +76,21 @@ def start_ssh_tunnel(port: int) -> tuple[subprocess.Popen[str] | None, str | Non
     return None, None
 
 
+def pick_bind_port(host: str, preferred_port: int) -> int:
+    for candidate in [preferred_port, 8001, 8080, 8765]:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, candidate))
+                return candidate
+            except OSError:
+                continue
+    return preferred_port
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start ExitLens backend with auto HTTPS tunnel.")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     parser.add_argument(
         "--no-tunnel",
@@ -85,19 +98,22 @@ def main() -> int:
         help="Skip opening an SSH tunnel (uses mock fallback when start_url is omitted).",
     )
     args = parser.parse_args()
+    bind_port = pick_bind_port(args.host, args.port)
+    if bind_port != args.port:
+        print(f"[INFO] Port {args.port} is already in use; binding to port {bind_port} instead.")
 
     tunnel_proc: subprocess.Popen[str] | None = None
     if not args.no_tunnel and not os.getenv("PUBLIC_DEMO_BASE_URL"):
-        print(f"Opening public HTTPS tunnel to 127.0.0.1:{args.port} via localhost.run...")
-        tunnel_proc, public_url = start_ssh_tunnel(args.port)
+        print(f"Opening public HTTPS tunnel to 127.0.0.1:{bind_port} via localhost.run...")
+        tunnel_proc, public_url = start_ssh_tunnel(bind_port)
         if public_url:
             os.environ["PUBLIC_DEMO_BASE_URL"] = public_url
 
     public_base = os.getenv("PUBLIC_DEMO_BASE_URL")
     print("=" * 64)
-    print(f"ExitLens Backend Ready:   http://localhost:{args.port}")
-    print(f"Swagger API Docs:         http://localhost:{args.port}/docs")
-    print(f"Curated Presets Endpoint: http://localhost:{args.port}/presets")
+    print(f"ExitLens Backend Ready:   http://localhost:{bind_port}")
+    print(f"Swagger API Docs:         http://localhost:{bind_port}/docs")
+    print(f"Curated Presets Endpoint: http://localhost:{bind_port}/presets")
     if public_base:
         print(f"Public Tunnel Active:     {public_base}")
         print(f"  - StreamFlix India:     {public_base}/demo-site/")
@@ -111,7 +127,7 @@ def main() -> int:
     try:
         from main import app
 
-        uvicorn.run(app, host=args.host, port=args.port)
+        uvicorn.run(app, host=args.host, port=bind_port)
     finally:
         if tunnel_proc is not None:
             tunnel_proc.terminate()
