@@ -79,6 +79,15 @@ class RunCreated(BaseModel):
     run_id: str = Field(..., examples=["run_ab12cd34"])
 
 
+class ServicePreset(BaseModel):
+    id: str = Field(..., examples=["streamflix"])
+    service: str = Field(..., examples=["StreamFlix India"])
+    category: str = Field(..., examples=["Video OTT"])
+    demo_path: str = Field(..., examples=["/demo-site/"])
+    description: str
+    expected_outcome: AuditOutcome = Field("completed_with_evidence")
+
+
 # --- GET /runs/{run_id}/events (SSE `data:` payloads) -----------------------
 
 

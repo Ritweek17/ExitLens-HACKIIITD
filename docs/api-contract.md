@@ -22,6 +22,23 @@ This file has two parts:
 
 `200 OK` -> `{"status": "ok"}`
 
+### `GET /presets`
+
+`200 OK` -> `ServicePreset[]` (curated Indian subscription audit targets and their local `/demo-site/` paths):
+
+```json
+[
+  {
+    "id": "streamflix",
+    "service": "StreamFlix India",
+    "category": "Video OTT",
+    "demo_path": "/demo-site/",
+    "description": "7-step buried cancellation flow with 11px muted link, 50% retention wall, and guilt-shaming copy.",
+    "expected_outcome": "completed_with_evidence"
+  }
+]
+```
+
 ### `POST /runs`
 
 Create and start an audit run.
@@ -89,7 +106,7 @@ Event order: one or more `step` -> `stopped` -> `report_ready`. On failure an `e
   "run_id": "run_ab12cd34",
   "service": "Example OTT",
   "outcome": "completed_with_evidence",
-  "friction_score": 70,
+  "friction_score": 65,
   "safety_gate_stopped": true,
   "stop_reason": "pre_cancellation_boundary",
   "streaming_url": null,
@@ -99,7 +116,7 @@ Event order: one or more `step` -> `stopped` -> `report_ready`. On failure an `e
       "indicator": "extra_steps",
       "title": "7 steps required to reach the cancellation boundary",
       "severity": "high",
-      "weight": 30,
+      "weight": 25,
       "verified": true,
       "description": "Reaching the final cancellation control takes 7 navigation steps instead of a direct 1-2 click exit.",
       "step_refs": [1, 2, 3, 4, 5, 6, 7],

@@ -29,10 +29,14 @@ Server: http://localhost:8000
 | URL | What |
 |---|---|
 | `GET /health` | Health check |
+| `GET /presets` | Curated Indian subscription presets (`StreamFlix India`, `GanaPlus Music`, `QuickCart Pro`, `CineVeil VIP`) |
 | `POST /runs` | Create a run (needs `human_approved` and `test_account_confirmed` set to `true`) |
-| `GET /runs/{run_id}/events` | SSE stream of steps (mock) |
-| `GET /runs/{run_id}/report` | Friction report (mock) |
-| `/demo-site/` | Fake OTT site with planted dark patterns, used as the audit target |
+| `GET /runs/{run_id}/events` | SSE stream of steps (live TinyFish or deterministic demo fallback) |
+| `GET /runs/{run_id}/report` | Evidence-gated friction report |
+| `/demo-site/` | StreamFlix India demo target (buried cancel, retention wall, confirm-shaming) |
+| `/demo-site/music.html` | GanaPlus Music demo target (FAQ redirect loop, mandatory survey, trick copy) |
+| `/demo-site/fair.html` | QuickCart Pro demo target (clean 2-step CCPA-compliant benchmark) |
+| `/demo-site/blocked.html` | CineVeil VIP demo target (Cloudflare Error 1200 / CAPTCHA + OTP barrier) |
 | `/docs` | Swagger UI with the exact request/response models |
 
 Quick check:
@@ -67,6 +71,13 @@ TinyFish runs in the cloud, so it cannot reach `localhost`. To audit the demo si
 | `models.py` | Pydantic models: the API contract in code |
 | `orchestrator.py` | TinyFish streaming adapter, barrier/CAPTCHA detector, evidence normaliser, and mock fallback |
 | `scoring.py` | Box D deduplicated indicator weights (`30/20/15/15/10/10`) and evidence-gating |
-| `mock_data.py` | Deterministic demo fallback steps and report |
+| `mock_data.py` | Curated Indian OTT presets, deterministic fallback steps, and reports |
+| `test_backend.py` | Unit & integration tests for scoring, barrier detection, and API endpoints |
 | `tinyfish_test.py` | Standalone TinyFish streaming test |
-| `demo_site/` | Mock dark-pattern subscription site |
+| `demo_site/` | Mock dark-pattern subscription sites (`index.html`, `music.html`, `fair.html`, `blocked.html`) |
+
+## Run unit & integration tests
+
+```bash
+PYTHONPATH=backend backend/venv/bin/python -m unittest discover -s backend -p "test_*.py" -v
+```
