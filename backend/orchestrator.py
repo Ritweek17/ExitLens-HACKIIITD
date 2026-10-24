@@ -193,9 +193,11 @@ META_STEP_PREFIXES = (
     "extract ",
     "get full",
     "get detailed",
+    "get visual",
     "capture ",
     "understand ",
     "visual inspection",
+    "visually ",
     "check ",
     "verify ",
     "read ",
@@ -204,7 +206,7 @@ META_STEP_PREFIXES = (
     "document the",
     "report blocked",
     "compile ",
-    "return json",
+    "return ",
 )
 
 CCPA_DEFAULT_RATIONALES: dict[CcpaPattern, str] = {
