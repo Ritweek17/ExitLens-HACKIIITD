@@ -436,6 +436,72 @@ class SharedRunStreamTests(unittest.TestCase):
         self.assertEqual(state["report"].outcome, "failed")
 
 
+class RunStorePruningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._saved = dict(main.RUNS)
+        main.RUNS.clear()
+
+    def tearDown(self) -> None:
+        main.RUNS.clear()
+        main.RUNS.update(self._saved)
+
+    @staticmethod
+    def _run(created: float, active: bool = False, done: bool = False) -> dict:
+        run: dict = {"service": "S", "created_mono": created}
+        if active:
+            run["task"] = object()
+        if done:
+            run["done"] = True
+        return run
+
+    def test_ttl_expires_inactive_runs_but_never_active_ones(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(main, "RUN_TTL_SECONDS", 100), mock.patch.object(main, "MAX_RUNS", 50):
+            main.RUNS.update(
+                {
+                    "old_idle": self._run(0),
+                    "old_done": self._run(0, active=True, done=True),
+                    "old_active": self._run(0, active=True),
+                    "fresh": self._run(950),
+                }
+            )
+            main.prune_runs(now_mono=1000)
+        self.assertEqual(set(main.RUNS), {"old_active", "fresh"})
+
+    def test_cap_evicts_oldest_inactive_runs_first(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(main, "RUN_TTL_SECONDS", 10_000), mock.patch.object(main, "MAX_RUNS", 3):
+            main.RUNS.update(
+                {
+                    "a_active": self._run(1, active=True),
+                    "b": self._run(2),
+                    "c": self._run(3),
+                    "d": self._run(4),
+                    "e": self._run(5),
+                }
+            )
+            main.prune_runs(now_mono=10)
+        self.assertEqual(list(main.RUNS), ["a_active", "d", "e"])
+
+    def test_create_run_prunes_and_new_run_is_retrievable(self) -> None:
+        from unittest import mock
+
+        client = TestClient(main.app)
+        with mock.patch.object(main, "MAX_RUNS", 2):
+            ids = [
+                client.post(
+                    "/runs",
+                    json={"service": "S", "human_approved": True, "test_account_confirmed": True},
+                ).json()["run_id"]
+                for _ in range(4)
+            ]
+        self.assertLessEqual(len(main.RUNS), 3)
+        self.assertIn(ids[-1], main.RUNS)
+        self.assertEqual(client.get(f"/runs/{ids[0]}/report").status_code, 404)
+
+
 class ApiContractIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         main.MOCK_STEP_DELAY_SECONDS = 0.0

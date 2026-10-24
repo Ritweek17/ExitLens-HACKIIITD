@@ -5,6 +5,7 @@ Box B / D / E pipeline (orchestrator.py, scoring.py, mock_data.py).
 """
 
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -25,6 +26,19 @@ ALLOWED_ORIGINS = [
     o.strip() for o in (os.getenv("ALLOWED_ORIGINS") or DEFAULT_ORIGINS).split(",") if o.strip()
 ]
 MOCK_STEP_DELAY_SECONDS = 0.6
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int((os.getenv(name) or "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# In-memory run store limits (finished/idle runs only; active runs are never evicted).
+MAX_RUNS = _env_positive_int("MAX_RUNS", 200)
+RUN_TTL_SECONDS = _env_positive_int("RUN_TTL_SECONDS", 3600)
 
 app = FastAPI(title="ExitLens API", version="0.1.0")
 
@@ -58,6 +72,27 @@ def get_run(run_id: str) -> dict:
     if run is None:
         raise ApiError(404, "run_not_found", f"No run with id '{run_id}'.")
     return run
+
+
+def _is_active(run: dict) -> bool:
+    """A run is active while its audit task has started and not yet finished."""
+    return "task" in run and not run.get("done", False)
+
+
+def prune_runs(now_mono: float | None = None) -> None:
+    """Drop expired runs, then the oldest inactive runs while the store exceeds MAX_RUNS."""
+    now_mono = time.monotonic() if now_mono is None else now_mono
+    for rid in [
+        rid
+        for rid, run in RUNS.items()
+        if not _is_active(run) and now_mono - run["created_mono"] > RUN_TTL_SECONDS
+    ]:
+        del RUNS[rid]
+    # dicts keep insertion order, so iteration is oldest-first
+    for rid in [rid for rid, run in RUNS.items() if not _is_active(run)]:
+        if len(RUNS) <= MAX_RUNS:
+            break
+        del RUNS[rid]
 
 
 @app.get("/", include_in_schema=False)
@@ -100,11 +135,13 @@ def create_run(body: RunCreate) -> RunCreated:
     if body.start_url is not None and body.start_url.scheme != "https":
         raise ApiError(422, "invalid_start_url", "start_url must use HTTPS.")
 
+    prune_runs()
     run_id = f"run_{uuid.uuid4().hex[:8]}"
     RUNS[run_id] = {
         "service": body.service,
         "start_url": str(body.start_url) if body.start_url else None,
         "created_at": now(),
+        "created_mono": time.monotonic(),
         "events": None,
         "report": None,
     }
