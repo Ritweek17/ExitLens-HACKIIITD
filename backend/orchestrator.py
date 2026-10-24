@@ -7,7 +7,13 @@ from datetime import datetime
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
-from mock_data import MOCK_STEPS, mock_report, mock_step_event, now
+from mock_data import (
+    mock_report,
+    mock_step_event,
+    mock_steps_for_run,
+    now,
+    resolve_preset_demo_path,
+)
 from models import (
     AuditOutcome,
     CcpaAlignment,
@@ -63,17 +69,181 @@ BLOCK_KEYWORDS = (
     "access denied",
     "bot detection",
     "attention required",
+    "login required",
+    "sign in to continue",
 )
+
+ERROR_BARRIER_KEYWORDS = (
+    "error 1200",
+    "cloudflare",
+    "captcha",
+    "verify you are human",
+    "access denied",
+    "bot",
+    "attention required",
+    "login",
+    "sign in",
+    "authentication required",
+    "unauthorized",
+    "forbidden",
+    "403",
+    "401",
+    "blocked",
+    "security",
+    "challenge",
+    "agent_failure",
+    "err_http2_protocol_error",
+    "err_access_denied",
+    "navigation failed",
+    "timeout",
+    "can't be processed",
+    "cannot be processed",
+)
+
+INFRA_ERROR_KEYWORDS = (
+    "invalid api key",
+    "authenticationerror",
+    "billing_failure",
+    "paymentrequired",
+    "ratelimit",
+    "quota",
+    "insufficient",
+)
+
+TUNNEL_HOST_SUFFIXES = (
+    ".lhr.life",
+    ".ngrok-free.app",
+    ".ngrok.io",
+    ".trycloudflare.com",
+    ".loca.lt",
+)
+
+AUDIT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "blocked": {"type": "boolean"},
+        "block_reason": {"type": "string", "nullable": True},
+        "stopped_at_button": {"type": "string", "nullable": True},
+        "cancellation_completed": {"type": "boolean"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "indicator": {
+                        "type": "string",
+                        "enum": [
+                            "extra_steps",
+                            "hidden_cancel",
+                            "redirects",
+                            "forced_reason",
+                            "retention_offer",
+                            "unclear_copy",
+                        ],
+                    },
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "step_number": {"type": "integer"},
+                    "step_refs": {"type": "array", "items": {"type": "integer"}},
+                    "evidence_quote": {"type": "string", "nullable": True},
+                    "ccpa_pattern": {
+                        "type": "string",
+                        "enum": [
+                            "subscription_trap",
+                            "interface_interference",
+                            "confirm_shaming",
+                            "nagging",
+                            "forced_action",
+                            "false_urgency",
+                            "trick_question",
+                        ],
+                    },
+                    "ccpa_rationale": {"type": "string", "nullable": True},
+                },
+                "required": [
+                    "indicator",
+                    "title",
+                    "description",
+                    "step_number",
+                    "evidence_quote",
+                    "ccpa_pattern",
+                ],
+            },
+        },
+    },
+    "required": [
+        "blocked",
+        "block_reason",
+        "stopped_at_button",
+        "cancellation_completed",
+        "findings",
+    ],
+}
+
+NEGATED_BARRIER_PHRASES = (
+    "no captcha",
+    "no cloudflare",
+    "without captcha",
+    "without cloudflare",
+    "no login wall",
+    "not blocked",
+)
+
+META_STEP_PREFIXES = (
+    "submit ",
+    "present ",
+    "extract ",
+    "get full",
+    "get detailed",
+    "capture ",
+    "understand ",
+    "visual inspection",
+    "check context",
+    "document the",
+    "report blocked",
+    "compile ",
+    "return json",
+)
+
+CCPA_DEFAULT_RATIONALES: dict[CcpaPattern, str] = {
+    "subscription_trap": "Cancellation requires navigating a multi-step buried path instead of a direct exit control.",
+    "interface_interference": "Visual hierarchy strongly favours keeping the plan over a de-emphasized cancellation control.",
+    "confirm_shaming": "Confirmation copy uses guilt or emotional manipulation to steer the user away from cancelling.",
+    "nagging": "Retention or discount interstitials repeatedly interrupt the user's explicit intent to cancel.",
+    "forced_action": "User is forced to complete a mandatory survey or extra action before proceeding with cancellation.",
+    "false_urgency": "Time-limited or pressure messaging is used during the cancellation flow to deter exit.",
+    "trick_question": "Confusing or ambiguous button labels make it unclear which option continues cancellation.",
+    "basket_sneaking": "Unexpected add-on or renewal terms surfaced during subscription management.",
+    "bait_and_switch": "Promised cancellation action redirects to a different outcome or plan change.",
+    "drip_pricing": "Additional fees or penalties are revealed only at the cancellation stage.",
+    "disguised_advertisement": "Promotional retention offers are disguised as primary navigation controls.",
+    "saas_billing": "Opaque billing or renewal terms obstruct straightforward subscription exit.",
+    "rogue_malwares": "Deceptive popups or redirects interfere with account management.",
+}
 
 # Documentation placeholder/local hosts default to the fast deterministic mock path
 DEMO_FALLBACK_HOSTS = {"example.in", "www.example.in", "example.com", "www.example.com", "localhost", "127.0.0.1"}
 
 
-def should_use_live_tinyfish(start_url: str | None) -> bool:
-    """Return True only when a real external target URL and TINYFISH_API_KEY are present."""
-    if not start_url or not os.getenv("TINYFISH_API_KEY"):
+def resolve_effective_start_url(service: str, start_url: str | None) -> str | None:
+    """Resolve `start_url`, or map preset service names to `PUBLIC_DEMO_BASE_URL` when configured."""
+    if start_url:
+        host = (urlparse(start_url).hostname or "").lower()
+        if host and host not in DEMO_FALLBACK_HOSTS:
+            return start_url
+    public_base = (os.getenv("PUBLIC_DEMO_BASE_URL") or "").strip().rstrip("/")
+    if public_base.startswith("https://"):
+        demo_path = resolve_preset_demo_path(service, start_url)
+        return f"{public_base}{demo_path}"
+    return start_url
+
+
+def should_use_live_tinyfish(start_url: str | None, service: str = "") -> bool:
+    """Return True only when a real external target URL (or PUBLIC_DEMO_BASE_URL) and TINYFISH_API_KEY are present."""
+    effective_url = resolve_effective_start_url(service, start_url)
+    if not effective_url or not os.getenv("TINYFISH_API_KEY"):
         return False
-    host = (urlparse(start_url).hostname or "").lower()
+    host = (urlparse(effective_url).hostname or "").lower()
     return bool(host) and host not in DEMO_FALLBACK_HOSTS
 
 
@@ -83,7 +253,15 @@ def build_audit_goal(service: str) -> str:
         "Navigate toward cancelling the subscription and observe every step, dark pattern, or barrier. "
         "CRITICAL SAFETY RULE: STOP BEFORE clicking any final 'Cancel subscription' or 'Confirm cancellation' button. "
         "Never complete an irreversible cancellation. "
-        "If you hit a CAPTCHA, Cloudflare block, or login wall that you cannot pass, stop immediately and report it. "
+        "If you hit a CAPTCHA, Cloudflare block, OTP gate, or login wall that you cannot pass, stop immediately and set blocked=true. "
+        "If the cancellation flow is fair, transparent, and direct (1-2 clicks with equal visual button styling and no dark patterns), return an empty findings array (\"findings\": []). Do not invent friction on a clean exit flow. "
+        "Indicator mapping rules: "
+        "- Use 'extra_steps' (ccpa_pattern: 'subscription_trap') when reaching the final cancel screen takes more than 2 clicks. "
+        "- Use 'hidden_cancel' (ccpa_pattern: 'interface_interference') when the cancel link is buried in nested menus or styled in tiny/muted text next to a prominent 'Keep plan' button. "
+        "- Use 'redirects' (ccpa_pattern: 'subscription_trap' or 'bait_and_switch') for circular menus or dead-end pages. "
+        "- Use 'forced_reason' (ccpa_pattern: 'forced_action') when a mandatory reason/survey is required to continue. "
+        "- Use 'retention_offer' (ccpa_pattern: 'nagging' or 'false_urgency') when discount or pause offers interrupt the cancellation flow. "
+        "- Use 'unclear_copy' (ccpa_pattern: 'confirm_shaming' or 'trick_question') for guilt-tripping copy or confusing button labels. "
         "Return ONLY valid JSON with these exact keys: "
         "{"
         '"blocked": boolean, '
@@ -96,29 +274,122 @@ def build_audit_goal(service: str) -> str:
         '    "title": string, '
         '    "description": string, '
         '    "step_number": integer, '
-        '    "evidence_quote": string or null, '
-        '    "ccpa_pattern": one of ["subscription_trap","interface_interference","confirm_shaming","nagging","forced_action","false_urgency","trick_question"]'
+        '    "step_refs": [integer], '
+        '    "evidence_quote": string (exact visible button text, copy, or menu path observed), '
+        '    "ccpa_pattern": one of ["subscription_trap","interface_interference","confirm_shaming","nagging","forced_action","false_urgency","trick_question"], '
+        '    "ccpa_rationale": string'
         "  }"
         "]"
         "}"
     )
 
 
-def detect_barrier(steps: list[str], result_json: dict[str, Any] | None) -> str | None:
+def is_tunnel_demo_url(url: str | None) -> bool:
+    if not url:
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    return any(host.endswith(suffix) for suffix in TUNNEL_HOST_SUFFIXES)
+
+
+def build_tinyfish_stream_kwargs(start_url: str, goal: str) -> dict[str, Any]:
+    """Build TinyFish `agent.stream()` kwargs with stealth profile, optional India proxy, and JSON schema."""
+    from tinyfish import BrowserProfile, ProxyConfig
+
+    is_tunnel = is_tunnel_demo_url(start_url)
+    env_profile = (os.getenv("TINYFISH_BROWSER_PROFILE") or "").strip().lower()
+    if env_profile == "lite":
+        profile = BrowserProfile.LITE
+    elif env_profile == "stealth":
+        profile = BrowserProfile.STEALTH
+    else:
+        profile = BrowserProfile.LITE if is_tunnel else BrowserProfile.STEALTH
+
+    kwargs: dict[str, Any] = {
+        "url": start_url,
+        "goal": goal,
+        "browser_profile": profile,
+        "output_schema": AUDIT_OUTPUT_SCHEMA,
+    }
+
+    proxy_country = (os.getenv("TINYFISH_PROXY_COUNTRY") or "").strip().upper()
+    if proxy_country and not is_tunnel:
+        kwargs["proxy_config"] = ProxyConfig(enabled=True, country_code=proxy_country)
+
+    if not is_tunnel:
+        profile_id = (os.getenv("TINYFISH_PROFILE_ID") or "").strip()
+        if profile_id:
+            kwargs["use_profile"] = True
+            kwargs["profile_id"] = profile_id
+
+        use_vault_env = (os.getenv("TINYFISH_USE_VAULT") or "").strip().lower()
+        cred_ids_raw = (os.getenv("TINYFISH_CREDENTIAL_ITEM_IDS") or "").strip()
+        cred_ids = [c.strip() for c in cred_ids_raw.split(",") if c.strip()]
+        if use_vault_env in ("1", "true", "yes") or cred_ids:
+            kwargs["use_vault"] = True
+            if cred_ids:
+                kwargs["credential_item_ids"] = cred_ids
+
+    return kwargs
+
+
+def format_tinyfish_error(err: Any) -> str:
+    if err is None:
+        return ""
+    msg = getattr(err, "message", None)
+    cat = getattr(err, "category", None)
+    code = getattr(err, "code", None)
+    if msg:
+        prefix = str(code or cat or "ERROR")
+        return f"[{prefix}] {msg}"
+    text = str(err)
+    if "validation error for CompleteEvent" in text and "input_value=" in text:
+        return "Target URL or login-gated page was blocked by automated browser policy."
+    return text
+
+
+def _contains_unnegated_keyword(text: str) -> str | None:
+    lowered = text.lower()
+    for phrase in NEGATED_BARRIER_PHRASES:
+        lowered = lowered.replace(phrase, "")
+    for kw in BLOCK_KEYWORDS:
+        if kw in lowered:
+            return kw
+    return None
+
+
+def detect_barrier(
+    steps: list[str],
+    result_json: dict[str, Any] | None,
+    error_message: str | None = None,
+) -> str | None:
     """Box E: 'Agent complete != verified outcome' & 'CAPTCHA / auth barriers -> stop + report'."""
     if isinstance(result_json, dict):
         if result_json.get("blocked") is True:
             return str(result_json.get("block_reason") or "Blocked by login wall, CAPTCHA, or anti-bot gate.")
-        serialized = json.dumps(result_json).lower()
-        for kw in BLOCK_KEYWORDS:
-            if kw in serialized:
-                return f"Target site returned an anti-bot or security barrier matching '{kw}'."
+        # If the agent explicitly reported blocked=False and produced findings, do not false-positive on descriptions
+        has_findings = isinstance(result_json.get("findings"), list) and len(result_json["findings"]) > 0
+        if result_json.get("blocked") is False and has_findings:
+            return None
+        kw = _contains_unnegated_keyword(json.dumps(result_json))
+        if kw:
+            return f"Target site returned an anti-bot or security barrier matching '{kw}'."
 
-    joined_steps = " ".join(steps).lower()
-    for kw in BLOCK_KEYWORDS:
-        if kw in joined_steps:
-            return f"Observed step encountered barrier matching '{kw}'."
+    kw = _contains_unnegated_keyword(" ".join(steps))
+    if kw:
+        return f"Observed step encountered barrier matching '{kw}'."
+
+    if error_message:
+        err_lower = error_message.lower()
+        if not any(infra in err_lower for infra in INFRA_ERROR_KEYWORDS):
+            for bkw in ERROR_BARRIER_KEYWORDS:
+                if bkw in err_lower:
+                    return f"Target site blocked automated browser or requires human authentication ({error_message})."
     return None
+
+
+def _is_meta_step(label: str) -> bool:
+    lowered = label.strip().lower()
+    return any(lowered.startswith(prefix) for prefix in META_STEP_PREFIXES)
 
 
 def normalise_and_build_report(
@@ -130,6 +401,41 @@ def normalise_and_build_report(
     error_message: str | None = None,
 ) -> Report:
     """Box B & D: Normalise raw observations into Evidence, classify indicators, and compute weighted score."""
+    step_labels = [label for _, label, _ in steps]
+    barrier = detect_barrier(step_labels, result_json, error_message)
+    if barrier:
+        if steps:
+            last_idx, last_label, last_ts = steps[-1]
+            ev_content = f"{barrier} (Last observed step: {last_label})"
+        else:
+            last_idx, last_ts = 0, now()
+            ev_content = barrier
+        ev_list = [
+            Evidence(
+                id="ev_block",
+                step=last_idx,
+                kind="text",
+                timestamp=last_ts,
+                content=ev_content,
+            )
+        ]
+        return Report(
+            run_id=run_id,
+            service=service,
+            outcome="human_required",
+            friction_score=0,
+            safety_gate_stopped=False,
+            stop_reason="blocked",
+            streaming_url=streaming_url,
+            friction_signals=[],
+            evidence=ev_list,
+            ccpa_alignment=[],
+            limitations=[
+                f"Barrier detected (Agent complete != verified outcome): {barrier}",
+                "Human intervention or an authenticated session is required to continue.",
+            ],
+        )
+
     if error_message:
         return Report(
             run_id=run_id,
@@ -148,47 +454,21 @@ def normalise_and_build_report(
             ],
         )
 
-    step_labels = [label for _, label, _ in steps]
-    barrier = detect_barrier(step_labels, result_json)
-    if barrier:
-        ev_list: list[Evidence] = []
-        if steps:
-            last_idx, last_label, last_ts = steps[-1]
-            ev_list.append(
-                Evidence(
-                    id="ev_block",
-                    step=last_idx,
-                    kind="text",
-                    timestamp=last_ts,
-                    content=f"{barrier} (Last observed step: {last_label})",
-                )
-            )
-        return Report(
-            run_id=run_id,
-            service=service,
-            outcome="human_required",
-            friction_score=0,
-            safety_gate_stopped=False,
-            stop_reason="blocked",
-            streaming_url=streaming_url,
-            friction_signals=[],
-            evidence=ev_list,
-            ccpa_alignment=[],
-            limitations=[
-                f"Barrier detected (Agent complete != verified outcome): {barrier}",
-                "Human intervention or an authenticated session is required to continue.",
-            ],
-        )
-
     evidence: list[Evidence] = []
     raw_signals: list[FrictionSignal] = []
     ccpa_map: dict[CcpaPattern, list[str]] = {}
+    ccpa_rationales: dict[CcpaPattern, list[str]] = {}
 
     raw_findings = (result_json or {}).get("findings") if isinstance(result_json, dict) else None
     if not isinstance(raw_findings, list):
         raw_findings = []
 
     step_ts_map = {idx: ts for idx, _, ts in steps}
+    ui_step_indices = [idx for idx, lbl, _ in steps if not _is_meta_step(lbl)]
+    if not ui_step_indices and steps:
+        ui_step_indices = [idx for idx, _, _ in steps]
+    effective_total_steps = len(ui_step_indices) if ui_step_indices else len(steps)
+    max_step_idx = len(steps) or 1
     default_ts = now()
 
     for i, item in enumerate(raw_findings, start=1):
@@ -198,7 +478,23 @@ def normalise_and_build_report(
         indicator: FrictionIndicator = (
             raw_ind if raw_ind in VALID_INDICATORS else "unclear_copy"  # type: ignore[assignment]
         )
-        step_num = int(item.get("step_number") or (len(steps) or 1))
+        # Do not allow a false-positive extra_steps signal when UI steps are within the 2-step baseline
+        if indicator == "extra_steps" and steps and effective_total_steps <= 2:
+            continue
+        raw_step_num = int(item.get("step_number") or max_step_idx)
+        step_num = min(max(1, raw_step_num), max_step_idx)
+
+        raw_refs = item.get("step_refs")
+        if isinstance(raw_refs, list) and raw_refs:
+            step_refs = sorted(
+                {min(max(1, int(r)), max_step_idx) for r in raw_refs if isinstance(r, (int, float))}
+            )
+        else:
+            step_refs = [step_num]
+
+        if indicator == "extra_steps" and len(step_refs) <= 1 and len(ui_step_indices) > 1:
+            step_refs = list(ui_step_indices)
+
         quote = item.get("evidence_quote")
         ev_ids: list[str] = []
 
@@ -216,14 +512,16 @@ def normalise_and_build_report(
             ev_ids.append(ev_id)
 
         sig_id = f"sig_{i}"
+        sig_title = str(item.get("title") or f"Observed {indicator.replace('_', ' ')}")
+        sig_desc = str(item.get("description") or "Observed during cancellation flow walk.")
         raw_signals.append(
             FrictionSignal(
                 id=sig_id,
                 indicator=indicator,
-                title=str(item.get("title") or f"Observed {indicator.replace('_', ' ')}"),
+                title=sig_title,
                 severity=INDICATOR_SEVERITY[indicator],  # type: ignore[arg-type]
-                description=str(item.get("description") or "Observed during cancellation flow walk."),
-                step_refs=[step_num],
+                description=sig_desc,
+                step_refs=step_refs or [step_num],
                 evidence_ids=ev_ids,
             )
         )
@@ -232,19 +530,24 @@ def normalise_and_build_report(
         pattern: CcpaPattern = (
             raw_ccpa if raw_ccpa in VALID_CCPA else INDICATOR_TO_DEFAULT_CCPA[indicator]  # type: ignore[assignment]
         )
+        if indicator == "extra_steps":
+            pattern = "subscription_trap"
         ccpa_map.setdefault(pattern, []).append(sig_id)
+        custom_rationale = str(item.get("ccpa_rationale") or "").strip()
+        if custom_rationale:
+            ccpa_rationales.setdefault(pattern, []).append(custom_rationale)
 
-    # Auto-detect extra_steps if >3 steps were observed and extra_steps was not reported
-    if len(steps) > 3 and not any(s.indicator == "extra_steps" for s in raw_signals):
+    # Auto-detect extra_steps if >2 UI steps were observed and extra_steps was not reported
+    if effective_total_steps > 2 and not any(s.indicator == "extra_steps" for s in raw_signals):
         ev_id = f"ev_{len(evidence) + 1}"
         evidence.append(
             Evidence(
                 id=ev_id,
-                step=len(steps),
+                step=ui_step_indices[-1] if ui_step_indices else len(steps),
                 kind="text",
                 timestamp=steps[-1][2],
-                content=f"Cancellation flow required {len(steps)} observed steps: "
-                + " -> ".join(lbl for _, lbl, _ in steps[:6]),
+                content=f"Cancellation flow required {effective_total_steps} observed steps: "
+                + " -> ".join(lbl for idx, lbl, _ in steps if idx in ui_step_indices[:6]),
             )
         )
         sig_id = f"sig_{len(raw_signals) + 1}"
@@ -253,16 +556,18 @@ def normalise_and_build_report(
             FrictionSignal(
                 id=sig_id,
                 indicator="extra_steps",
-                title=f"{len(steps)} steps required to navigate toward cancellation",
+                title=f"{effective_total_steps} steps required to navigate toward cancellation",
                 severity="high",
                 description="Flow exceeded the 2-step baseline to reach the cancellation control.",
-                step_refs=[idx for idx, _, _ in steps],
+                step_refs=list(ui_step_indices),
                 evidence_ids=[ev_id],
             ),
         )
-        ccpa_map.setdefault("subscription_trap", []).append(sig_id)
+        ccpa_map.setdefault("subscription_trap", []).insert(0, sig_id)
 
-    total_score, scored_signals = score_signals(raw_signals, evidence)
+    total_score, scored_signals = score_signals(
+        raw_signals, evidence, total_steps=effective_total_steps if effective_total_steps else None
+    )
 
     # Safety gate evaluation
     cancellation_completed = bool(
@@ -275,7 +580,23 @@ def normalise_and_build_report(
 
     # Outcome classification (Box E)
     if not scored_signals:
-        outcome: AuditOutcome = "unverified"
+        if safety_gate_stopped and isinstance(result_json, dict) and (stopped_at or steps):
+            outcome: AuditOutcome = "completed_with_evidence"
+            if not evidence and steps:
+                evidence.append(
+                    Evidence(
+                        id="ev_1",
+                        step=ui_step_indices[-1] if ui_step_indices else len(steps),
+                        kind="text",
+                        timestamp=steps[-1][2],
+                        content=(
+                            f"Direct {effective_total_steps}-step exit path verified with no dark patterns; "
+                            f"stopped at '{stopped_at or 'pre-cancellation boundary'}'."
+                        ),
+                    )
+                )
+        else:
+            outcome = "unverified"
     elif all(s.verified for s in scored_signals):
         outcome = "completed_with_evidence"
     elif any(s.verified for s in scored_signals):
@@ -287,7 +608,14 @@ def normalise_and_build_report(
         CcpaAlignment(
             pattern=pat,
             signal_ids=sig_ids,
-            rationale=f"Candidate CCPA '{pat.replace('_', ' ')}' signal linked to {', '.join(sig_ids)}.",
+            rationale=(
+                ccpa_rationales[pat][0]
+                if pat in ccpa_rationales and ccpa_rationales[pat]
+                else CCPA_DEFAULT_RATIONALES.get(
+                    pat,
+                    f"Candidate CCPA '{pat.replace('_', ' ')}' signal linked to {', '.join(sig_ids)}.",
+                )
+            ),
         )
         for pat, sig_ids in ccpa_map.items()
     ]
@@ -330,27 +658,34 @@ async def stream_audit_run(
             yield ev
         return
 
-    start_url: str | None = run_state.get("start_url")
+    raw_start_url: str | None = run_state.get("start_url")
     service: str = run_state["service"]
+    start_url: str | None = resolve_effective_start_url(service, raw_start_url)
     api_key = os.getenv("TINYFISH_API_KEY")
 
     # Demo fallback path (when no real external start_url or no API key is configured)
-    if not should_use_live_tinyfish(start_url):
+    if not should_use_live_tinyfish(raw_start_url, service):
+        demo_steps = mock_steps_for_run(service, start_url)
         recorded_events: list[RunEvent] = []
-        for i, label in enumerate(MOCK_STEPS, start=1):
+        for i, label in enumerate(demo_steps, start=1):
             ev = mock_step_event(i, label)
             recorded_events.append(ev)
             yield ev
             if mock_delay_seconds > 0:
                 await asyncio.sleep(mock_delay_seconds)
 
-        last = len(MOCK_STEPS)
+        report = mock_report(run_id, service, start_url)
+        last = len(demo_steps)
         stopped_ev = RunEvent(
             type="stopped",
             step=last,
-            label="Stopped before the final cancellation action",
+            label=(
+                "Stopped before the final cancellation action"
+                if report.stop_reason == "pre_cancellation_boundary"
+                else f"Audit stopped ({report.stop_reason})"
+            ),
             timestamp=now(),
-            stop_reason="pre_cancellation_boundary",
+            stop_reason=report.stop_reason,
         )
         ready_ev = RunEvent(
             type="report_ready",
@@ -360,7 +695,7 @@ async def stream_audit_run(
         )
         recorded_events.extend([stopped_ev, ready_ev])
         run_state["events"] = recorded_events
-        run_state["report"] = mock_report(run_id, service)
+        run_state["report"] = report
         yield stopped_ev
         yield ready_ev
         return
@@ -381,7 +716,8 @@ async def stream_audit_run(
         try:
             client = TinyFish(api_key=api_key)
             goal = build_audit_goal(service)
-            with client.agent.stream(url=start_url, goal=goal) as stream:
+            stream_kwargs = build_tinyfish_stream_kwargs(start_url or "", goal)
+            with client.agent.stream(**stream_kwargs) as stream:
                 for event in stream:
                     ts = now()
                     if isinstance(event, StreamingUrlEvent):
@@ -399,11 +735,11 @@ async def stream_audit_run(
                         loop.call_soon_threadsafe(queue.put_nowait, run_ev)
                     elif isinstance(event, CompleteEvent):
                         if event.error:
-                            error_message = str(event.error)
+                            error_message = format_tinyfish_error(event.error)
                         if isinstance(event.result_json, dict):
                             result_json = event.result_json
         except Exception as exc:  # noqa: BLE001
-            error_message = str(exc)
+            error_message = format_tinyfish_error(exc)
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 

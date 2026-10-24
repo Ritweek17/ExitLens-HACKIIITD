@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuickCart Pro India - Membership</title>
+<!--
+  ExitLens DEMO TARGET #3: QuickCart Pro (Clean 2-Step Fair Exit Benchmark).
+  Demonstrates a CCPA-compliant, transparent 2-step cancellation flow with equal visual weight.
+-->
+<style>
+  body { font-family: system-ui, sans-serif; background: #f8fafc; color: #0f172a; max-width: 560px; margin: 40px auto; padding: 0 16px; }
+  .screen { display: none; } .screen.active { display: block; }
+  button { font-size: 16px; padding: 12px 20px; margin: 6px 8px 6px 0; cursor: pointer; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; color: #0f172a; font-weight: 600; }
+  .box { background: #fff; border: 1px solid #e2e8f0; padding: 18px; border-radius: 8px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>QuickCart Pro India</h1>
+
+<section id="account" class="screen active">
+  <h2>Membership Settings</h2>
+  <div class="box">
+    <p><strong>Plan:</strong> QuickCart Pro Monthly (₹149/month)</p>
+    <p><strong>Next renewal:</strong> 15 Nov</p>
+  </div>
+  <button onclick="go('confirm')">Cancel Membership</button>
+</section>
+
+<section id="confirm" class="screen">
+  <h2>Confirm Cancellation</h2>
+  <div class="box">
+    <p>Your QuickCart Pro benefits will remain active until the end of your current billing cycle (15 Nov). No further charges will be made.</p>
+  </div>
+  <button onclick="go('account')">Keep Membership</button>
+  <button id="final-cancel" onclick="alert('DEMO SITE: final cancellation button. ExitLens must stop BEFORE clicking it.')">Confirm cancellation</button>
+</section>
+
+<script>
+  function go(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === id));
+  }
+</script>
+</body>
+</html>

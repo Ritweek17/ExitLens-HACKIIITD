@@ -14,8 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from mock_data import mock_report, now
-from models import ErrorResponse, Report, RunCreate, RunCreated, RunEvent
+from mock_data import PRESETS, mock_report, now
+from models import ErrorResponse, Report, RunCreate, RunCreated, RunEvent, ServicePreset
 from orchestrator import should_use_live_tinyfish, stream_audit_run
 
 load_dotenv()
@@ -68,6 +68,11 @@ def root() -> RedirectResponse:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/presets", response_model=list[ServicePreset])
+def list_presets() -> list[ServicePreset]:
+    return PRESETS
 
 
 # Mock dark-pattern subscription site used as a safe, reliable audit target.
@@ -146,8 +151,8 @@ def run_report(run_id: str) -> Report:
     run = get_run(run_id)
     if run.get("report") is not None:
         return run["report"]
-    if not should_use_live_tinyfish(run.get("start_url")):
-        run["report"] = mock_report(run_id, run["service"])
+    if not should_use_live_tinyfish(run.get("start_url"), run["service"]):
+        run["report"] = mock_report(run_id, run["service"], run.get("start_url"))
         return run["report"]
     raise ApiError(
         409,
