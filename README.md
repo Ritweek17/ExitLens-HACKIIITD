@@ -29,7 +29,7 @@ The goal is to support clearer, more accountable cancellation experiences—not 
 
 - **Cancellation-flow friction audit:** Review a subscription cancellation journey for potential obstacles.
 - **Evidence-linked findings:** Associate observations with evidence so reviewers can understand why a finding was raised.
-- **CCPA-oriented mapping:** Help relate relevant findings to applicable California Consumer Privacy Act (CCPA) considerations. This is informational support, not legal advice or a legal compliance certification.
+- **CCPA-oriented mapping:** Help relate relevant findings to applicable Central Consumer Protection Authority (CCPA) considerations. This is informational support, not legal advice or a legal compliance certification.
 - **Human-in-the-loop control:** The user remains responsible for the final cancellation action.
 - **Web-based interface:** A frontend for interacting with the auditing workflow.
 - **Backend integration:** A Python API layer that includes TinyFish-related dependencies for the audit workflow.
