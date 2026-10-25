@@ -1,90 +1,69 @@
 # ExitLens
 
-**Audit subscription cancellation friction — with evidence, transparency, and user control.**
+**Auditing Subscription Cancellation Friction Through Evidence, Transparency, and User Control.**
 
-ExitLens is a tool designed to review subscription cancellation journeys and identify friction that may make it unnecessarily difficult for users to cancel a service. It aims to produce evidence-linked findings and map relevant observations to CCPA-related considerations, while keeping the final cancellation decision in the user's hands.
+ExitLens is a web-based auditing tool that analyzes subscription cancellation journeys to identify potential friction, document supporting evidence, and map relevant observations to consumer protection regulations.
 
-> **Important:** ExitLens is an auditing and decision-support tool. It does not automatically perform the final cancellation on a user's behalf.
+It helps reviewers understand where cancellation processes may create unnecessary barriers while keeping the final decision and cancellation action under user control.
 
-## Table of Contents
-
-- [Why ExitLens?](#why-exitlens)
-- [Key Features](#key-features)
-- [How It Works](#how-it-works)
-- [Technology Stack](#technology-stack)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Configuration](#configuration)
-- [Privacy and Safety](#privacy-and-safety)
-- [License](#license)
-- [Project Repository](#project-repository)
-
-## Why ExitLens?
-
-Subscription cancellation flows can contain confusing navigation, repeated steps, unclear wording, or other obstacles. ExitLens is intended to help make these experiences easier to inspect by documenting potential friction and connecting findings to supporting evidence.
-
-The goal is to support clearer, more accountable cancellation experiences—not to take control away from the user.
+> **Note:** ExitLens is an auditing and decision-support tool. It does not automatically execute subscription cancellations or provide legal compliance certification.
 
 ## Key Features
 
-- **Cancellation-flow friction audit:** Review a subscription cancellation journey for potential obstacles.
-- **Evidence-linked findings:** Associate observations with evidence so reviewers can understand why a finding was raised.
-- **CCPA-oriented mapping:** Help relate relevant findings to applicable Central Consumer Protection Authority (CCPA) considerations. This is informational support, not legal advice or a legal compliance certification.
-- **Human-in-the-loop control:** The user remains responsible for the final cancellation action.
-- **Web-based interface:** A frontend for interacting with the auditing workflow.
-- **Backend integration:** A Python API layer that includes TinyFish-related dependencies for the audit workflow.
-
-> The exact checks and outputs depend on the implementation and the website being reviewed. An audit result should be treated as a finding to review, not as an automatic legal conclusion.
+- **Cancellation Friction Detection:** Identifies potential obstacles in subscription cancellation workflows.
+- **Evidence-Linked Findings:** Connects detected friction signals to supporting evidence for transparent review.
+- **Regulatory Mapping:** Maps relevant observations to applicable CCPA (Central Consumer Protection Authority) considerations.
+- **Friction Assessment:** Presents identified issues to help reviewers evaluate the complexity of cancellation journeys.
+- **Human-in-the-Loop Control:** Keeps the final cancellation decision with the user.
+- **Web-Based Interface:** Provides an accessible interface for initiating audits and reviewing results.
 
 ## How It Works
 
-1. **Start an audit** — Provide or select the subscription cancellation journey to review.
-2. **Inspect the flow** — The system examines relevant steps using the configured audit workflow.
-3. **Review findings** — Potential friction points are presented alongside supporting evidence where available.
-4. **Consider regulatory context** — Relevant findings may be mapped to CCPA-oriented considerations.
-5. **Decide what to do** — The user reviews the results and decides whether to continue. ExitLens does not automatically execute the final cancellation.
+1. **Initiate Audit** — Provide the subscription cancellation journey for inspection.
+2. **Analyze Workflow** — The configured audit engine examines the cancellation process.
+3. **Detect Friction** — Identify potential barriers and unnecessary steps.
+4. **Review Evidence** — Examine supporting evidence and associated regulatory considerations.
+5. **Make an Informed Decision** — Review the findings and retain control over the final cancellation action.
 
 ## Technology Stack
 
-The repository currently includes the following technologies and dependencies:
-
-- **Frontend:** Next.js 15, React 19 (Web interface)
-- **Frontend Language:** TypeScript (Typed JavaScript development)
-- **Styling:** Tailwind CSS, PostCSS, Autoprefixer (UI styling and CSS processing)
-- **Icons:** Lucide React (Interface icons)
-- **Backend:** Python, FastAPI (API layer)
-- **API Server:** Uvicorn (ASGI server)
-- **Audit Integration:** TinyFish Python package (Website and audit workflow integration)
-- **Configuration & Validation:** python-dotenv, Pydantic (Environment configuration and data validation)
+| Layer | Technologies |
+|---|---|
+| Frontend Framework | Next.js 15, React 19 |
+| Language | TypeScript |
+| Styling | Tailwind CSS, PostCSS |
+| Icons | Lucide React |
+| Backend | Python, FastAPI |
+| API Server | Uvicorn |
+| Audit Integration | TinyFish |
+| Configuration & Validation | python-dotenv, Pydantic |
 
 ## Project Structure
 
 ```text
 ExitLens-HACKIIITD/
-├── backend/       # Python API and audit workflow
-├── frontend/      # Next.js web application
+├── backend/       # API and audit workflow
+├── frontend/      # Next.js application
 ├── docs/          # Project documentation
-└── AGENTS.md      # Repository-specific development guidance
+└── AGENTS.md      # Development guidelines
 ```
 
 ## Getting Started
 
 ### Prerequisites
 
-Install the following before running the project:
-
 - Git
 - Node.js and npm
-- Python 3.10 or newer (use the version supported by your environment and dependencies)
+- Python 3.10+
 
-### 1. Clone the repository
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Ritweek17/ExitLens-HACKIIITD.git
 cd ExitLens-HACKIIITD
 ```
 
-### 2. Set up the frontend
+### 2. Start the Frontend
 
 ```bash
 cd frontend
@@ -92,18 +71,11 @@ npm install
 npm run dev
 ```
 
-The Next.js development server usually runs at `http://localhost:3000`. Open that address in your browser if the terminal confirms it is available.
+Open [http://localhost:3000](http://localhost:3000).
 
-For a production build:
+### 3. Start the Backend
 
-```bash
-npm run build
-npm start
-```
-
-### 3. Set up the backend
-
-Open a second terminal from the repository root:
+Open a separate terminal from the repository root:
 
 ```bash
 cd backend
@@ -112,66 +84,51 @@ python -m venv .venv
 
 Activate the virtual environment.
 
-**Windows PowerShell**
+**Windows (PowerShell):**
 
 ```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-**macOS / Linux**
+**macOS / Linux:**
 
 ```bash
 source .venv/bin/activate
 ```
 
-Install the Python dependencies:
+Install dependencies and start the API:
 
 ```bash
 pip install -r requirements.txt
-```
-
-Start the FastAPI application:
-
-```bash
 uvicorn main:app --reload
 ```
 
-If your backend entry point uses a different filename or application variable, adjust `main:app` accordingly.
+The backend entry point and application variable should match the actual project configuration.
 
-### 4. Configure environment variables
+### 4. Environment Configuration
 
-If the backend or TinyFish integration requires credentials, create a `.env` file in the location expected by the application. Add only the variable names required by the code or official service documentation.
-
-Example template:
+Create a `.env` file in the backend's expected configuration directory and add the required environment variables.
 
 ```env
-# Add the environment variables required by your backend here.
-# Do not commit API keys, passwords, or other secrets.
+# Add required API credentials and configuration here.
 ```
 
-Confirm required variables from the backend source code and the relevant TinyFish documentation before running the integration.
+Refer to the backend implementation and TinyFish documentation for the required variables.
 
-## Configuration
+## Privacy & Responsible Use
 
-- Keep credentials in environment variables rather than hard-coding them.
-- Do not commit `.env` files or access tokens.
-- Confirm the frontend's API base URL matches the backend address used in your local environment.
-- Follow the configuration and usage instructions provided by the current source code and TinyFish account setup.
+ExitLens follows a user-controlled auditing approach:
 
-## Privacy and Safety
-
-ExitLens is designed around user oversight:
-
-- **No automated final cancellation:** The tool should not submit the final cancellation action on the user's behalf.
-- **Evidence matters:** Reviewers should be able to inspect the evidence behind findings where the implementation provides it.
-- **Careful interpretation:** Automated observations may be incomplete or incorrect and should be reviewed.
-- **Protect credentials and session data:** Do not publish passwords, cookies, tokens, or private account information in logs, screenshots, issues, or commits.
-- **Regulatory context is not legal advice:** CCPA mapping is informational and does not establish compliance by itself.
+- **User Authority:** No automated final cancellation on behalf of the user.
+- **Evidence Transparency:** Findings should be traceable to supporting evidence.
+- **Responsible Interpretation:** Automated findings require human review.
+- **Data Protection:** Credentials, session tokens, and private account information must remain protected.
+- **Regulatory Disclaimer:** Regulatory mappings are informational and do not constitute legal advice or establish compliance.
 
 ## License
 
-No license information was confirmed while preparing this README. Add the project's chosen license and include a `LICENSE` file before describing the repository as open source for reuse.
+No license has currently been specified. A `LICENSE` file must be added before the repository can be distributed under an open-source license.
 
-## Project Repository
+## Repository
 
-[ExitLens-HACKIIITD on GitHub](https://github.com/Ritweek17/ExitLens-HACKIIITD)
+[GitHub — ExitLens-HACKIIITD](https://github.com/Ritweek17/ExitLens-HACKIIITD)
