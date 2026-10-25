@@ -233,17 +233,6 @@ The backend reads `backend/.env`; the frontend reads `frontend/.env.local`. All 
 
 Keep credentials in the backend environment only. Do not put TinyFish keys, passwords, or session secrets in frontend variables or commits.
 
-### Run the demo site
-
-With the backend running, open these local pages:
-
-- [StreamFlix buried cancellation demo](http://localhost:8000/demo-site/)
-- [GanaPlus redirect and retention demo](http://localhost:8000/demo-site/music.html)
-- [QuickCart fair-flow demo](http://localhost:8000/demo-site/fair.html)
-- [CineVeil security-barrier demo](http://localhost:8000/demo-site/blocked.html)
-
-The pages are served by FastAPI. Opening them locally does not make the cloud TinyFish browser able to reach them. Live browser audits of a local demo require a public HTTPS tunnel and `PUBLIC_DEMO_BASE_URL`; the `backend/start_live_demo.py` helper can open a tunnel and start the server. Without a TinyFish API key, the application returns predefined demo reports instead of crawling these pages.
-
 ## Usage
 
 1. Open **Start an audit**, select a preset (or enter a service), and choose a registered dedicated test account.
@@ -253,38 +242,6 @@ The pages are served by FastAPI. Opening them locally does not make the cloud Ti
 5. In the report, review the score and findings, expand each finding to read its evidence quote, use the timeline to follow the observed steps, and check candidate CCPA alignments and listed limitations.
 
 If no API key is configured, the report is generated from deterministic mock data. Treat it as a product demo and not as evidence collected from the named external service.
-
-## Demo flows
-
-The built-in report fixtures provide these example scores:
-
-| Demo service | Fixture behavior | Expected score |
-|---|---|---:|
-| StreamFlix India | Buried cancel link, retention offer, and guilt-framed copy | 65 |
-| GanaPlus Music | Redirect loop, hidden link, required survey, retention offer, and confusing copy | 90 |
-| QuickCart Pro | Direct two-step path with clear billing notice | 0 |
-| CineVeil VIP | CAPTCHA / OTP barrier; human assistance required | 0 |
-
-These values come from deterministic fallback reports. For live runs, findings and scores depend on the target and observed evidence. The fair demo stops at the final confirmation screen just like the other demo pages; it does not cancel anything.
-
-<!-- TODO: add screenshot or GIF of the audit form, run monitor, and report. -->
-
-## Limitations and roadmap
-
-**Current limitations**
-
-- Live browsing, step descriptions, and account identity checks depend on TinyFish and the configured test-account context.
-- The live stop-before-cancel rule is stated in the agent prompt; the backend does not technically intercept the final browser click.
-- Backend run records are held in memory and are lost when the server restarts.
-- Current report evidence is stored as text quotes/descriptions. The backend report normalizer does not store DOM snapshots; generated screenshots are not part of the evidence pipeline.
-- The v1 approval flags are client-supplied, and the app does not authenticate a supervisor.
-
-**Possible next steps**
-
-- Authenticate supervisors and persist approval records and audit runs.
-- Bind and verify dedicated test-account identities more strongly before live navigation.
-- Capture, redact, and retain screenshots or other evidence resources with access controls.
-- Add an enforceable browser-level cancellation boundary and broaden automated evaluation coverage.
 
 ## Team and hackathon
 
