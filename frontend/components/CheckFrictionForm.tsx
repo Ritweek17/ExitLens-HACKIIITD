@@ -37,6 +37,10 @@ const COMMON_SERVICES = [
   "Grammarly",
 ];
 
+const SERVICE_DEFAULT_URLS: Record<string, string> = {
+  "YouTube Premium": "https://www.youtube.com/paid_memberships",
+};
+
 export function CheckFrictionForm() {
   const router = useRouter();
 
@@ -165,13 +169,14 @@ export function CheckFrictionForm() {
 
   function selectService(name: string) {
     const preset = presets.find((item) => item.service === name);
+    const defaultUrl = SERVICE_DEFAULT_URLS[name.trim()];
     setService(name);
     setSearchTerm(name);
     setTestAccountRef(preset?.default_test_account_ref || "");
     setPermissionConfirmed(false);
     setAccountConfirmed(false);
     setUseExternalUrl(false);
-    setStartUrl("");
+    setStartUrl(defaultUrl || "");
     setUrlError(null);
     setIsOpen(false);
     setHighlightedIndex(-1);
