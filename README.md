@@ -1,69 +1,60 @@
 # ExitLens
 
-**Auditing Subscription Cancellation Friction Through Evidence, Transparency, and User Control.**
+**Audit Subscription Cancellation Friction Through Evidence, Transparency, and User Control.**
 
-ExitLens is a web-based auditing tool that analyzes subscription cancellation journeys to identify potential friction, document supporting evidence, and map relevant observations to consumer protection regulations.
+ExitLens is a web-based auditing tool that identifies potential friction in subscription cancellation journeys, links findings to supporting evidence, and maps relevant observations to consumer protection guidelines.
 
-It helps reviewers understand where cancellation processes may create unnecessary barriers while keeping the final decision and cancellation action under user control.
+> **Note:** ExitLens is a decision-support tool. Final cancellation remains under user control.
 
-> **Note:** ExitLens is an auditing and decision-support tool. It does not automatically execute subscription cancellations or provide legal compliance certification.
+## Features
 
-## Key Features
-
-- **Cancellation Friction Detection:** Identifies potential obstacles in subscription cancellation workflows.
-- **Evidence-Linked Findings:** Connects detected friction signals to supporting evidence for transparent review.
-- **Regulatory Mapping:** Maps relevant observations to applicable CCPA (Central Consumer Protection Authority) considerations.
-- **Friction Assessment:** Presents identified issues to help reviewers evaluate the complexity of cancellation journeys.
-- **Human-in-the-Loop Control:** Keeps the final cancellation decision with the user.
-- **Web-Based Interface:** Provides an accessible interface for initiating audits and reviewing results.
+- **Friction Detection:** Identifies potential barriers in cancellation workflows.
+- **Evidence-Based Auditing:** Links findings to supporting evidence.
+- **Regulatory Mapping:** Maps observations to relevant CCPA considerations.
+- **Friction Assessment:** Evaluates potential cancellation complexity.
+- **User Control:** Does not automate final cancellation.
 
 ## How It Works
 
-1. **Initiate Audit** — Provide the subscription cancellation journey for inspection.
-2. **Analyze Workflow** — The configured audit engine examines the cancellation process.
-3. **Detect Friction** — Identify potential barriers and unnecessary steps.
-4. **Review Evidence** — Examine supporting evidence and associated regulatory considerations.
-5. **Make an Informed Decision** — Review the findings and retain control over the final cancellation action.
+1. Submit a cancellation journey.
+2. Analyze the workflow.
+3. Detect potential friction points.
+4. Review evidence and regulatory mapping.
+5. Make an informed decision.
 
-## Technology Stack
+## Tech Stack
 
-| Layer | Technologies |
+| Component | Technologies |
 |---|---|
-| Frontend Framework | Next.js 15, React 19 |
-| Language | TypeScript |
+| Frontend | Next.js 15, React 19, TypeScript |
 | Styling | Tailwind CSS, PostCSS |
 | Icons | Lucide React |
-| Backend | Python, FastAPI |
-| API Server | Uvicorn |
+| Backend | Python, FastAPI, Uvicorn |
 | Audit Integration | TinyFish |
-| Configuration & Validation | python-dotenv, Pydantic |
+| Configuration | Pydantic, python-dotenv |
 
 ## Project Structure
 
 ```text
 ExitLens-HACKIIITD/
-├── backend/       # API and audit workflow
-├── frontend/      # Next.js application
-├── docs/          # Project documentation
-└── AGENTS.md      # Development guidelines
+├── backend/
+├── frontend/
+├── docs/
+└── AGENTS.md
 ```
 
 ## Getting Started
 
-### Prerequisites
+**Prerequisites:** Git, Node.js, npm, Python 3.10+
 
-- Git
-- Node.js and npm
-- Python 3.10+
-
-### 1. Clone the Repository
+**1. Clone Repository**
 
 ```bash
 git clone https://github.com/Ritweek17/ExitLens-HACKIIITD.git
 cd ExitLens-HACKIIITD
 ```
 
-### 2. Start the Frontend
+**2. Run Frontend**
 
 ```bash
 cd frontend
@@ -71,64 +62,48 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
-
-### 3. Start the Backend
-
-Open a separate terminal from the repository root:
+**3. Run Backend**
 
 ```bash
 cd backend
 python -m venv .venv
 ```
 
-Activate the virtual environment.
-
-**Windows (PowerShell):**
+Activate the environment:
 
 ```powershell
+# Windows
 .venv\Scripts\Activate.ps1
 ```
 
-**macOS / Linux:**
-
 ```bash
+# macOS / Linux
 source .venv/bin/activate
 ```
 
-Install dependencies and start the API:
+Install dependencies and start the server:
 
 ```bash
 pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-The backend entry point and application variable should match the actual project configuration.
+**4. Environment Variables**
 
-### 4. Environment Configuration
+Configure the required credentials in a `.env` file. Never commit secrets.
 
-Create a `.env` file in the backend's expected configuration directory and add the required environment variables.
+## Privacy & Safety
 
-```env
-# Add required API credentials and configuration here.
-```
-
-Refer to the backend implementation and TinyFish documentation for the required variables.
-
-## Privacy & Responsible Use
-
-ExitLens follows a user-controlled auditing approach:
-
-- **User Authority:** No automated final cancellation on behalf of the user.
-- **Evidence Transparency:** Findings should be traceable to supporting evidence.
-- **Responsible Interpretation:** Automated findings require human review.
-- **Data Protection:** Credentials, session tokens, and private account information must remain protected.
-- **Regulatory Disclaimer:** Regulatory mappings are informational and do not constitute legal advice or establish compliance.
+- No automated final cancellation.
+- Evidence-linked audit findings.
+- Human review of automated observations.
+- Protection of credentials and session data.
+- Regulatory mapping is not legal advice.
 
 ## License
 
-No license has currently been specified. A `LICENSE` file must be added before the repository can be distributed under an open-source license.
+No license has been specified yet.
 
 ## Repository
 
-[GitHub — ExitLens-HACKIIITD](https://github.com/Ritweek17/ExitLens-HACKIIITD)
+[GitHub – ExitLens-HACKIIITD](https://github.com/Ritweek17/ExitLens-HACKIIITD)
