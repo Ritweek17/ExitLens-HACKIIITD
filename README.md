@@ -290,8 +290,8 @@ These values come from deterministic fallback reports. For live runs, findings a
 
 Built for **HackIIITD / ESYA'26**.
 
-- **Team:** [Team name]
-- **Members:** [Name 1], [Name 2], [Name 3]
+- **Team:** Creative-Curators
+- **Members:** Ritweek Dubey , Richa Kumari Verma , Vivek Yadav
 - **Project presentation:** [Link, if available]
 
 ## License
